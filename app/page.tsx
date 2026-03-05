@@ -18,6 +18,7 @@ interface GenerateResult {
   fileName: string;
   status: 'ok' | 'error';
   spUrl?: string;
+  spError?: string;
   emailSent?: boolean;
   error?: string;
 }
@@ -476,7 +477,8 @@ export default function Home() {
                         View on SharePoint
                       </a>
                     )}
-                    {r.emailSent && <span className="text-xs text-green-600 ml-2">Email sent ✓</span>}
+                    {r.spError && <p className="text-xs text-amber-600 mt-0.5">SharePoint: {r.spError}</p>}
+                    {r.emailSent && <p className="text-xs text-green-600 mt-0.5">Email sent ✓</p>}
                     {r.error && <p className="text-xs text-red-600 mt-0.5">{r.error}</p>}
                   </div>
                 </div>

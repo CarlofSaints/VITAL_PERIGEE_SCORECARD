@@ -42,6 +42,7 @@ export interface GenerateResult {
   fileName: string;
   status: 'ok' | 'error';
   spUrl?: string;
+  spError?: string;
   emailSent?: boolean;
   error?: string;
 }

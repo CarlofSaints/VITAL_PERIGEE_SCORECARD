@@ -58,38 +58,39 @@ export async function POST(req: NextRequest) {
 
       const fileName = buildFileName(repInfo, repVisits);
 
+      // Build Excel — if this fails, skip this rep entirely
+      let excelBuffer: Buffer;
       try {
-        const excelBuffer = await buildRepReport(repInfo, repVisits, submissionDate);
-        const result: GenerateResult = {
-          repName:  repInfo.fullName,
-          fileName,
-          status:   'ok',
-        };
-
-        // SharePoint upload
-        if (action === 'sharepoint' || action === 'both') {
-          const uploaded = await uploadReport(excelBuffer, folderName, fileName);
-          result.spUrl = uploaded.webUrl;
-        }
-
-        // Collect for email
-        if (action === 'email' || action === 'both') {
-          emailAttachments.push({
-            name:          fileName,
-            contentBase64: excelBuffer.toString('base64'),
-          });
-          emailRepNames.push(repInfo.fullName);
-        }
-
-        results.push(result);
+        excelBuffer = await buildRepReport(repInfo, repVisits, submissionDate);
       } catch (err: unknown) {
         results.push({
-          repName:  repInfo.fullName,
+          repName: repInfo.fullName,
           fileName,
-          status:   'error',
-          error:    err instanceof Error ? err.message : String(err),
+          status:  'error',
+          error:   `Excel build failed: ${err instanceof Error ? err.message : String(err)}`,
         });
+        continue;
       }
+
+      const result: GenerateResult = { repName: repInfo.fullName, fileName, status: 'ok' };
+
+      // SharePoint upload — failure is reported but does NOT block email
+      if (action === 'sharepoint' || action === 'both') {
+        try {
+          const uploaded = await uploadReport(excelBuffer, folderName, fileName);
+          result.spUrl = uploaded.webUrl;
+        } catch (err: unknown) {
+          result.spError = err instanceof Error ? err.message : String(err);
+        }
+      }
+
+      // Collect for email — always runs regardless of SP outcome
+      if (action === 'email' || action === 'both') {
+        emailAttachments.push({ name: fileName, contentBase64: excelBuffer.toString('base64') });
+        emailRepNames.push(repInfo.fullName);
+      }
+
+      results.push(result);
     }
 
     // Send email (single email with all attachments)
