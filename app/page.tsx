@@ -1,8 +1,307 @@
 'use client';
 
-import { useState, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import Image from 'next/image';
+import Link from 'next/link';
 import type { Rep } from '@/types';
+
+// ── Comparison Report section ──────────────────────────────────────────────────
+
+type CompPeriod = 'weekly' | 'monthly' | 'quarterly';
+type CompAction = 'sharepoint' | 'email' | 'both';
+
+interface CompResult {
+  ok?: boolean;
+  fileName?: string;
+  spUrl?: string;
+  spError?: string;
+  emailSent?: boolean;
+  emailError?: string;
+  dateRange?: string;
+  error?: string;
+}
+
+interface FilterOptions {
+  channels:  string[];
+  provinces: string[];
+  reps:      { email: string; name: string }[];
+  stores:    { name: string; channel: string }[];
+}
+
+function ComparisonReport() {
+  const [from, setFrom]           = useState('');
+  const [to, setTo]               = useState('');
+  const [period, setPeriod]       = useState<CompPeriod>('monthly');
+  const [action, setAction]       = useState<CompAction>('sharepoint');
+  const [email, setEmail]         = useState('');
+  const [emailConfirmed, setEmailConfirmed] = useState(false);
+  const [running, setRunning]     = useState(false);
+  const [result, setResult]       = useState<CompResult | null>(null);
+
+  const needsEmail = action === 'email' || action === 'both';
+  const emailValid = !needsEmail || (email.includes('@') && email.includes('.'));
+  const canRun = !!(from && to && from <= to && emailValid && (!needsEmail || emailConfirmed));
+
+  // Filter options loaded from history
+  const [filterOptions, setFilterOptions]   = useState<FilterOptions | null>(null);
+  const [filtersLoading, setFiltersLoading] = useState(true);
+  const [selChannels, setSelChannels]       = useState<string[]>([]);
+  const [selProvinces, setSelProvinces]     = useState<string[]>([]);
+  const [selReps, setSelReps]               = useState<string[]>([]);
+  const [selStores, setSelStores]           = useState<string[]>([]);
+
+  // Load filter options from history on mount
+  useEffect(() => {
+    setFiltersLoading(true);
+    fetch('/api/comparison')
+      .then((r) => r.json())
+      .then((data: FilterOptions & { error?: string }) => {
+        if (!data.error) setFilterOptions(data);
+      })
+      .catch(() => {})
+      .finally(() => setFiltersLoading(false));
+  }, []);
+
+  // Stores available based on selected channels (all stores when no channel filter)
+  const availableStoreNames = filterOptions
+    ? (selChannels.length > 0
+        ? filterOptions.stores.filter((s) => selChannels.includes(s.channel)).map((s) => s.name)
+        : filterOptions.stores.map((s) => s.name))
+    : [];
+
+  // When channel selection changes, deselect stores that are no longer available
+  useEffect(() => {
+    if (!filterOptions) return;
+    const available = selChannels.length > 0
+      ? filterOptions.stores.filter((s) => selChannels.includes(s.channel)).map((s) => s.name)
+      : filterOptions.stores.map((s) => s.name);
+    setSelStores((prev) => prev.filter((s) => available.includes(s)));
+  }, [selChannels, filterOptions]);
+
+  const handleRun = async () => {
+    if (!canRun) return;
+    setRunning(true);
+    setResult(null);
+    try {
+      const res = await fetch('/api/comparison', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          from, to, period, action,
+          emailAddress: needsEmail ? email : undefined,
+          filters: {
+            channels:  selChannels.length  ? selChannels  : undefined,
+            provinces: selProvinces.length ? selProvinces : undefined,
+            reps:      selReps.length      ? selReps      : undefined,
+            stores:    selStores.length    ? selStores    : undefined,
+          },
+        }),
+      });
+      const data = await res.json();
+      setResult(data);
+    } catch (err: unknown) {
+      setResult({ error: err instanceof Error ? err.message : 'Unknown error' });
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6 mt-8">
+      <h2 className="text-base font-bold text-[#32373C] mb-1 flex items-center gap-2">
+        <span className="w-6 h-6 rounded-full bg-[#32373C] text-white text-xs flex items-center justify-center font-bold">★</span>
+        Comparison Report
+      </h2>
+      <p className="text-xs text-gray-500 mb-5">
+        Generates a trend report from accumulated history data — showing score averages by rep and store across periods.
+      </p>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
+        <div>
+          <label className="block text-xs font-semibold text-[#32373C] mb-1">From date</label>
+          <input
+            type="date"
+            value={from}
+            onChange={(e) => setFrom(e.target.value)}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:border-[#DA291C]"
+          />
+        </div>
+        <div>
+          <label className="block text-xs font-semibold text-[#32373C] mb-1">To date</label>
+          <input
+            type="date"
+            value={to}
+            onChange={(e) => setTo(e.target.value)}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:border-[#DA291C]"
+          />
+        </div>
+      </div>
+
+      {/* Period selector */}
+      <div className="mb-4">
+        <label className="block text-xs font-semibold text-[#32373C] mb-2">Period grouping</label>
+        <div className="flex flex-wrap gap-2">
+          {(['weekly', 'monthly', 'quarterly'] as CompPeriod[]).map((p) => (
+            <button
+              key={p}
+              type="button"
+              onClick={() => setPeriod(p)}
+              className={`px-4 py-2 rounded-lg text-sm font-medium border transition-colors capitalize ${
+                period === p
+                  ? 'bg-[#32373C] text-white border-[#32373C]'
+                  : 'bg-white text-[#32373C] border-gray-300 hover:border-[#32373C]'
+              }`}
+            >
+              {p}
+            </button>
+          ))}
+        </div>
+        <p className="text-xs text-gray-400 mt-1.5">
+          {period === 'weekly' && 'Columns = weeks ending on a Sunday'}
+          {period === 'monthly' && 'Columns = calendar months (e.g. Jan 2026)'}
+          {period === 'quarterly' && 'Columns = quarters (e.g. Q1 2026)'}
+        </p>
+      </div>
+
+      {/* Filters */}
+      <div className="mb-4">
+        <label className="block text-xs font-semibold text-[#32373C] mb-1">
+          Filters{' '}
+          <span className="font-normal text-gray-400">— leave empty to include all data</span>
+        </label>
+        {filtersLoading && !filterOptions && (
+          <p className="text-xs text-gray-400 mt-1">Loading filter options from history…</p>
+        )}
+        {filterOptions && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-2">
+            <MultiSelect
+              label="Channel"
+              items={filterOptions.channels}
+              selected={selChannels}
+              onChange={setSelChannels}
+            />
+            <MultiSelect
+              label="Province"
+              items={filterOptions.provinces}
+              selected={selProvinces}
+              onChange={setSelProvinces}
+            />
+            <MultiSelect
+              label="Rep"
+              items={filterOptions.reps.map((r) => r.email)}
+              selected={selReps}
+              onChange={setSelReps}
+              getId={(email) => email}
+              getLabel={(email) => filterOptions.reps.find((r) => r.email === email)?.name ?? email}
+            />
+            <MultiSelect
+              label="Store"
+              items={availableStoreNames}
+              selected={selStores}
+              onChange={setSelStores}
+            />
+          </div>
+        )}
+        {!filtersLoading && !filterOptions && (
+          <p className="text-xs text-amber-600 mt-1">Could not load filter options — filters unavailable.</p>
+        )}
+      </div>
+
+      {/* Delivery action */}
+      <div className="mb-4">
+        <label className="block text-xs font-semibold text-[#32373C] mb-2">Delivery</label>
+        <div className="flex flex-wrap gap-2">
+          {([
+            { val: 'sharepoint', label: 'SharePoint only' },
+            { val: 'email',      label: 'Email only' },
+            { val: 'both',       label: 'Both' },
+          ] as const).map(({ val, label }) => (
+            <button
+              key={val}
+              type="button"
+              onClick={() => { setAction(val); setEmailConfirmed(false); }}
+              className={`px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${
+                action === val
+                  ? 'bg-[#DA291C] text-white border-[#DA291C]'
+                  : 'bg-white text-[#32373C] border-gray-300 hover:border-[#DA291C]'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Email — only shown when needed */}
+      {needsEmail && (
+        <div className="mb-4 space-y-2">
+          <div>
+            <label className="block text-xs font-semibold text-[#32373C] mb-1">Email address</label>
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => { setEmail(e.target.value); setEmailConfirmed(false); }}
+              placeholder="recipient@example.com"
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:border-[#DA291C]"
+            />
+          </div>
+          <label className="flex items-start gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={emailConfirmed}
+              onChange={(e) => setEmailConfirmed(e.target.checked)}
+              className="mt-0.5 accent-[#DA291C]"
+            />
+            <span className="text-sm text-gray-600">
+              I confirm I want to send this report to <strong>{email || '…'}</strong>
+            </span>
+          </label>
+        </div>
+      )}
+
+      <button
+        type="button"
+        onClick={handleRun}
+        disabled={!canRun || running}
+        className="px-6 py-2.5 bg-[#32373C] text-white font-bold rounded-lg text-sm hover:bg-[#1e2226] disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
+      >
+        {running && (
+          <svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
+          </svg>
+        )}
+        {running ? 'Generating…' : 'Generate Comparison Report'}
+      </button>
+
+      {from && to && from > to && (
+        <p className="mt-2 text-xs text-red-500">From date must be before to date.</p>
+      )}
+
+      {/* Result */}
+      {result && (
+        <div className={`mt-4 rounded-lg border p-4 text-sm ${result.error ? 'bg-red-50 border-red-200' : 'bg-green-50 border-green-200'}`}>
+          {result.error ? (
+            <p className="text-red-700"><strong>Error:</strong> {result.error}</p>
+          ) : (
+            <div className="space-y-1">
+              <p className="font-semibold text-green-800">Report generated — {result.dateRange}</p>
+              <p className="text-xs text-gray-600">{result.fileName}</p>
+              {result.spUrl && (
+                <a href={result.spUrl} target="_blank" rel="noreferrer" className="text-xs text-[#DA291C] underline block">
+                  View on SharePoint
+                </a>
+              )}
+              {result.spError && <p className="text-xs text-amber-700">SharePoint error: {result.spError}</p>}
+              {result.emailSent && <p className="text-xs text-green-700">Email sent ✓</p>}
+              {result.emailError && <p className="text-xs text-red-600">Email failed: {result.emailError}</p>}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -20,6 +319,8 @@ interface GenerateResult {
   spUrl?: string;
   spError?: string;
   emailSent?: boolean;
+  repEmailSent?: boolean;
+  repEmailError?: string;
   error?: string;
 }
 
@@ -36,9 +337,14 @@ function MultiSelect({
   getLabel?: (item: string) => string;
 }) {
   const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
   const id   = getId   ?? ((x: string) => x);
   const lbl  = getLabel ?? ((x: string) => x);
   const all  = selected.length === items.length;
+
+  const filteredItems = query
+    ? items.filter((item) => lbl(item).toLowerCase().includes(query.toLowerCase()))
+    : items;
 
   const toggle = (item: string) => {
     onChange(
@@ -48,12 +354,17 @@ function MultiSelect({
     );
   };
 
+  const handleOpen = () => {
+    if (open) setQuery('');
+    setOpen((o) => !o);
+  };
+
   return (
     <div className="relative">
       <label className="block text-sm font-semibold text-[#32373C] mb-1">{label}</label>
       <button
         type="button"
-        onClick={() => setOpen((o) => !o)}
+        onClick={handleOpen}
         className="w-full flex items-center justify-between px-3 py-2 bg-white border border-gray-300 rounded-lg text-sm text-left hover:border-[#DA291C] transition-colors"
       >
         <span className="truncate">
@@ -69,34 +380,67 @@ function MultiSelect({
       </button>
 
       {open && (
-        <div className="absolute z-20 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-64 overflow-y-auto">
-          {/* Select All */}
-          <button
-            type="button"
-            onClick={() => onChange(all ? [] : items.map(id))}
-            className="w-full flex items-center gap-2 px-3 py-2 text-sm font-semibold text-[#DA291C] hover:bg-red-50 border-b border-gray-100"
-          >
-            <span className={`w-4 h-4 rounded border-2 flex items-center justify-center shrink-0 ${all ? 'bg-[#DA291C] border-[#DA291C]' : 'border-gray-400'}`}>
-              {all && <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>}
-            </span>
-            Select All
-          </button>
-          {items.map((item) => {
-            const checked = selected.includes(id(item));
-            return (
-              <button
-                key={id(item)}
-                type="button"
-                onClick={() => toggle(item)}
-                className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-gray-50"
-              >
-                <span className={`w-4 h-4 rounded border-2 flex items-center justify-center shrink-0 ${checked ? 'bg-[#DA291C] border-[#DA291C]' : 'border-gray-400'}`}>
-                  {checked && <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>}
-                </span>
-                {lbl(item)}
-              </button>
-            );
-          })}
+        <div className="absolute z-20 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg">
+          {/* Search */}
+          <div className="px-3 py-2 border-b border-gray-100">
+            <div className="relative">
+              <svg className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z" />
+              </svg>
+              <input
+                type="text"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder={`Search ${label.toLowerCase()}…`}
+                className="w-full pl-7 pr-6 py-1 text-sm border border-gray-200 rounded focus:outline-none focus:border-[#DA291C]"
+                onClick={(e) => e.stopPropagation()}
+              />
+              {query && (
+                <button
+                  type="button"
+                  onClick={() => setQuery('')}
+                  className="absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                >
+                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              )}
+            </div>
+          </div>
+          <div className="max-h-56 overflow-y-auto">
+            {/* Select All */}
+            <button
+              type="button"
+              onClick={() => onChange(all ? [] : items.map(id))}
+              className="w-full flex items-center gap-2 px-3 py-2 text-sm font-semibold text-[#DA291C] hover:bg-red-50 border-b border-gray-100"
+            >
+              <span className={`w-4 h-4 rounded border-2 flex items-center justify-center shrink-0 ${all ? 'bg-[#DA291C] border-[#DA291C]' : 'border-gray-400'}`}>
+                {all && <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>}
+              </span>
+              Select All
+            </button>
+            {filteredItems.length === 0 ? (
+              <p className="px-3 py-3 text-sm text-gray-400 text-center">No results</p>
+            ) : (
+              filteredItems.map((item) => {
+                const checked = selected.includes(id(item));
+                return (
+                  <button
+                    key={id(item)}
+                    type="button"
+                    onClick={() => toggle(item)}
+                    className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-gray-50"
+                  >
+                    <span className={`w-4 h-4 rounded border-2 flex items-center justify-center shrink-0 ${checked ? 'bg-[#DA291C] border-[#DA291C]' : 'border-gray-400'}`}>
+                      {checked && <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>}
+                    </span>
+                    {lbl(item)}
+                  </button>
+                );
+              })
+            )}
+          </div>
         </div>
       )}
     </div>
@@ -118,11 +462,28 @@ export default function Home() {
   const [action, setAction]                     = useState<'sharepoint' | 'email' | 'both'>('sharepoint');
   const [emailAddress, setEmailAddress]         = useState('');
   const [emailConfirmed, setEmailConfirmed]     = useState(false);
+  const [emailToReps, setEmailToReps]           = useState(false);
+  const [ccSelf, setCcSelf]                     = useState(false);
+  const [ccEmail, setCcEmail]                   = useState('');
+  const [includeExceptionReport, setIncludeExceptionReport] = useState(false);
 
   const [generating, setGenerating]     = useState(false);
   const [results, setResults]           = useState<GenerateResult[] | null>(null);
   const [generateError, setGenerateError] = useState('');
   const [folderName, setFolderName]     = useState('');
+  const [historyAdded, setHistoryAdded] = useState<number | null>(null);
+  const [historyError, setHistoryError] = useState('');
+
+  // Exception report result
+  const [exceptionReport, setExceptionReport] = useState<{
+    fileName: string;
+    exceptionCount: number;
+    sheetSummary: { name: string; count: number }[];
+    spUrl?: string;
+    spError?: string;
+    emailSent?: boolean;
+    emailError?: string;
+  } | null>(null);
 
   // ── File handling ──────────────────────────────────────────────────────────
 
@@ -188,6 +549,9 @@ export default function Home() {
     setGenerating(true);
     setResults(null);
     setGenerateError('');
+    setHistoryAdded(null);
+    setHistoryError('');
+    setExceptionReport(null);
 
     const fd = new FormData();
     fd.append('file', file);
@@ -195,6 +559,9 @@ export default function Home() {
     fd.append('selectedChannels', JSON.stringify(selectedChannels));
     fd.append('action',           action);
     if (needsEmail) fd.append('emailAddress', emailAddress);
+    if (emailToReps) fd.append('emailToReps', 'true');
+    if (emailToReps && ccSelf && ccEmail) fd.append('ccEmail', ccEmail);
+    if (includeExceptionReport) fd.append('includeExceptionReport', 'true');
 
     try {
       const res  = await fetch('/api/generate', { method: 'POST', body: fd });
@@ -202,6 +569,9 @@ export default function Home() {
       if (!res.ok) throw new Error(data.error ?? 'Generation failed');
       setResults(data.results);
       setFolderName(data.folderName ?? '');
+      setHistoryAdded(data.historyAdded ?? null);
+      setHistoryError(data.historyError ?? '');
+      setExceptionReport(data.exceptionReport ?? null);
     } catch (err: unknown) {
       setGenerateError(err instanceof Error ? err.message : 'Unknown error');
     } finally {
@@ -217,7 +587,12 @@ export default function Home() {
       <header className="bg-white shadow-sm border-b-4 border-[#DA291C]">
         <div className="max-w-4xl mx-auto px-6 py-4 flex items-center justify-between">
           <Image src="/vital-logo.png" alt="Vital" width={120} height={48} className="object-contain" />
-          <Image src="/outerjoin-logo.png" alt="OuterJoin" width={160} height={48} className="object-contain" />
+          <div className="flex items-center gap-6">
+            <Link href="/log" className="text-sm text-[#32373C] hover:text-[#DA291C] font-medium transition-colors">
+              Activity Log
+            </Link>
+            <Image src="/perigee-logo.jpg" alt="Perigee" width={80} height={48} className="object-contain" />
+          </div>
         </div>
       </header>
 
@@ -229,7 +604,8 @@ export default function Home() {
           <h1 className="text-2xl font-bold text-[#DA291C] mb-2">Vital Perigee Score Card Builder</h1>
           <p className="text-sm text-gray-600 leading-relaxed">
             Welcome to the Vital Perigee Score Card Builder. Before you begin, ensure you have exported
-            your form data from the Perigee portal.
+            your form data from the{' '}
+            <a href="https://live.perigeeportal.co.za/" target="_blank" rel="noreferrer" className="text-[#DA291C] underline">Perigee Portal</a>.
             Please load the raw data as is — do not make changes to the exported data.
             Make your selections and then hit <strong>Submit</strong>!
           </p>
@@ -389,6 +765,66 @@ export default function Home() {
                     </label>
                   </div>
                 )}
+
+                {/* Email to Reps */}
+                <div className="mt-4 pt-4 border-t border-gray-100 space-y-3">
+                  <label className="flex items-start gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={emailToReps}
+                      onChange={(e) => setEmailToReps(e.target.checked)}
+                      className="mt-0.5 accent-[#DA291C]"
+                    />
+                    <div>
+                      <span className="text-sm font-semibold text-[#32373C]">Email to Reps</span>
+                      <p className="text-xs text-gray-500 mt-0.5">
+                        Send each rep their own report to the email address in the data. The email is personalised with their name and score summary.
+                      </p>
+                    </div>
+                  </label>
+
+                  {emailToReps && (
+                    <div className="ml-6 space-y-2">
+                      <label className="flex items-start gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={ccSelf}
+                          onChange={(e) => setCcSelf(e.target.checked)}
+                          className="mt-0.5 accent-[#DA291C]"
+                        />
+                        <span className="text-sm text-gray-700">Include me on each rep email (CC)</span>
+                      </label>
+                      {ccSelf && (
+                        <input
+                          type="email"
+                          value={ccEmail}
+                          onChange={(e) => setCcEmail(e.target.value)}
+                          placeholder="your-email@example.com"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:border-[#DA291C]"
+                        />
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* Exception Report */}
+                <div className="mt-4 pt-4 border-t border-gray-100">
+                  <label className="flex items-start gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={includeExceptionReport}
+                      onChange={(e) => setIncludeExceptionReport(e.target.checked)}
+                      className="mt-0.5 accent-[#DA291C]"
+                    />
+                    <div>
+                      <span className="text-sm font-semibold text-[#32373C]">Generate Exception Report</span>
+                      <p className="text-xs text-gray-500 mt-0.5">
+                        Creates a separate Excel file listing all visits where questions were answered negatively — one sheet per question with store details, SKUs, and photo links.
+                        Delivered via the same action selected above (SharePoint / Email / Both).
+                      </p>
+                    </div>
+                  </label>
+                </div>
               </div>
 
               {/* Step 5: Submit */}
@@ -413,15 +849,6 @@ export default function Home() {
                     {generating ? 'Generating…' : `Generate ${selectedReps.length} Report(s)`}
                   </button>
 
-                  {/* Placeholder: Summary Report */}
-                  <button
-                    type="button"
-                    disabled
-                    title="Coming soon"
-                    className="px-6 py-3 bg-gray-100 text-gray-400 font-medium rounded-lg text-sm border border-gray-200 cursor-not-allowed"
-                  >
-                    Run Summary Report <span className="text-xs">(coming soon)</span>
-                  </button>
                 </div>
 
                 {!canSubmit && parsedMeta && !generating && (
@@ -438,6 +865,9 @@ export default function Home() {
           )}
         </form>
 
+        {/* Comparison Report (always visible) */}
+        <ComparisonReport />
+
         {/* Generate error */}
         {generateError && (
           <div className="mt-4 bg-red-50 border border-red-200 rounded-lg p-4 text-sm text-red-700">
@@ -450,7 +880,22 @@ export default function Home() {
           <div className="mt-6 bg-white rounded-xl border border-gray-200 shadow-sm p-6">
             <h2 className="text-base font-bold text-[#32373C] mb-1">Results</h2>
             {folderName && (
-              <p className="text-xs text-gray-500 mb-4">Folder: <code className="bg-gray-100 px-1 rounded">{folderName}</code></p>
+              <p className="text-xs text-gray-500 mb-1">Folder: <code className="bg-gray-100 px-1 rounded">{folderName}</code></p>
+            )}
+            {historyAdded !== null && (
+              <div className={`mb-4 px-3 py-2 rounded-lg border text-sm font-medium ${
+                historyError
+                  ? 'bg-red-50 border-red-300 text-red-700'
+                  : historyAdded === 0
+                  ? 'bg-amber-50 border-amber-300 text-amber-700'
+                  : 'bg-green-50 border-green-300 text-green-700'
+              }`}>
+                {historyError
+                  ? `History update failed: ${historyError}`
+                  : historyAdded === 0
+                  ? 'History: 0 new visits added (all already on record)'
+                  : `History updated — ${historyAdded} new visit${historyAdded !== 1 ? 's' : ''} saved to SharePoint`}
+              </div>
             )}
             <div className="space-y-2">
               {results.map((r, i) => (
@@ -478,12 +923,46 @@ export default function Home() {
                       </a>
                     )}
                     {r.spError && <p className="text-xs text-amber-600 mt-0.5">SharePoint: {r.spError}</p>}
-                    {r.emailSent && <p className="text-xs text-green-600 mt-0.5">Email sent ✓</p>}
+                    {r.emailSent && <p className="text-xs text-green-600 mt-0.5">Summary email sent ✓</p>}
+                    {r.repEmailSent && <p className="text-xs text-green-600 mt-0.5">Rep email sent ✓</p>}
+                    {r.repEmailError && <p className="text-xs text-amber-600 mt-0.5">Rep email: {r.repEmailError}</p>}
                     {r.error && <p className="text-xs text-red-600 mt-0.5">{r.error}</p>}
                   </div>
                 </div>
               ))}
             </div>
+
+            {/* Exception Report result */}
+            {exceptionReport && (
+              <div className="mt-4 pt-4 border-t border-gray-200">
+                <h3 className="text-sm font-bold text-[#32373C] mb-2">Exception Report</h3>
+                <div className={`p-3 rounded-lg border text-sm ${
+                  exceptionReport.spError && !exceptionReport.spUrl ? 'bg-red-50 border-red-200' : 'bg-green-50 border-green-200'
+                }`}>
+                  <p className="font-semibold text-[#32373C]">
+                    {exceptionReport.exceptionCount} exception{exceptionReport.exceptionCount !== 1 ? 's' : ''} across {exceptionReport.sheetSummary.length} question{exceptionReport.sheetSummary.length !== 1 ? 's' : ''}
+                  </p>
+                  <p className="text-xs text-gray-500">{exceptionReport.fileName}</p>
+                  {exceptionReport.sheetSummary.length > 0 && (
+                    <ul className="mt-1 space-y-0.5">
+                      {exceptionReport.sheetSummary.map((s) => (
+                        <li key={s.name} className="text-xs text-gray-600">
+                          <span className="font-medium text-[#DA291C]">{s.count}</span> — {s.name}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {exceptionReport.spUrl && (
+                    <a href={exceptionReport.spUrl} target="_blank" rel="noreferrer" className="text-xs text-[#DA291C] underline block mt-1">
+                      View on SharePoint
+                    </a>
+                  )}
+                  {exceptionReport.spError && <p className="text-xs text-amber-600 mt-0.5">SharePoint: {exceptionReport.spError}</p>}
+                  {exceptionReport.emailSent && <p className="text-xs text-green-600 mt-0.5">Exception report email sent ✓</p>}
+                  {exceptionReport.emailError && <p className="text-xs text-red-600 mt-0.5">Email failed: {exceptionReport.emailError}</p>}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </main>

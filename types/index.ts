@@ -16,8 +16,11 @@ export interface StoreVisit {
   province: string;
   date: string; // DD/MM/YYYY as in raw data
   dateObj: Date;
+  visitUUID?: string;
   answers: Record<string, string | null>; // questionId → 'Yes'|'No'|null
   comments: Record<string, string>; // questionId → comment text
+  skus: Record<string, string>; // questionId → pipe-separated SKU list (from "Select…" columns)
+  photoUrls: Record<string, string>; // questionId → photo URL (from "Photo…" columns)
   overallComment: string;
 }
 
@@ -44,5 +47,7 @@ export interface GenerateResult {
   spUrl?: string;
   spError?: string;
   emailSent?: boolean;
+  repEmailSent?: boolean;
+  repEmailError?: string;
   error?: string;
 }

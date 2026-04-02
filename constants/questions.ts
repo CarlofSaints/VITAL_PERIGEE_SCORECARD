@@ -43,6 +43,12 @@ export const QUESTIONS: QuestionDef[] = [
     text: 'Is the relevant NPD on shelf',
     rawHeader: 'Is the relevant NPD on shelf?',
   },
+  {
+    id: 'osa-backup',
+    section: 'ON SHELF AVAILABILITY',
+    text: "Have all relevant out of stock SKU's in back up been merchandised on shelf",
+    rawHeader: "Have all relevant out of stock SKU's in back up been merchandised on shelf?",
+  },
 
   // ── PROMOTION ─────────────────────────────────────────────────────────────
   {
@@ -115,6 +121,14 @@ export const QUESTIONS: QuestionDef[] = [
     rawHeader:
       'Has all damages and expired stock been marked down or written up as required',
   },
+  {
+    id: 'sh-expired-check',
+    section: 'SHELF HEALTH',
+    text: 'Is there any expired stock on shelf or in store rooms',
+    rawHeader: 'Has expired stock been found on shelf or in the backup area',
+    inverted: true,
+    optional: true,
+  },
 
   // ── MULTI PLACEMENTS / FORWARD SHARE ──────────────────────────────────────
   {
@@ -163,4 +177,4 @@ export const QUESTIONS: QuestionDef[] = [
   },
 ];
 
-export const TOTAL_QUESTIONS = QUESTIONS.length; // 20
+export const TOTAL_QUESTIONS = QUESTIONS.length; // 22

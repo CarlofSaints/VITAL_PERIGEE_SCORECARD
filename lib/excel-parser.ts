@@ -35,6 +35,28 @@ function findCommentIdx(headers: string[], questionIdx: number): number | null {
   return null;
 }
 
+// Find the "Select…" column after a question (pipe-separated SKU list)
+function findSkuIdx(headers: string[], questionIdx: number): number | null {
+  for (let i = questionIdx + 1; i < headers.length; i++) {
+    const h = headers[i] ?? '';
+    if (/^select\b/i.test(h)) return i;
+    if (/^comments?[,\s]/i.test(h) || /^overall general/i.test(h)) return null;
+    if (/^(Is |Has |Are |Do |Does )/i.test(h)) return null;
+  }
+  return null;
+}
+
+// Find the first "Photo…" column after a question (image URL)
+function findPhotoIdx(headers: string[], questionIdx: number): number | null {
+  for (let i = questionIdx + 1; i < headers.length; i++) {
+    const h = headers[i] ?? '';
+    if (/^photo\b/i.test(h)) return i;
+    if (/^comments?[,\s]/i.test(h) || /^overall general/i.test(h)) return null;
+    if (/^(Is |Has |Are |Do |Does )/i.test(h)) return null;
+  }
+  return null;
+}
+
 export function parsePerigeeExport(buffer: Buffer): ParseResult {
   const wb = XLSX.read(buffer, { type: 'buffer', cellDates: false });
   const ws = wb.Sheets['Worksheet'];
@@ -54,6 +76,8 @@ export function parsePerigeeExport(buffer: Buffer): ParseResult {
   // Find column indices for each question (case-insensitive partial match fallback)
   const questionColIdx: Record<string, number | null> = {};
   const questionCommentIdx: Record<string, number | null> = {};
+  const questionSkuIdx: Record<string, number | null> = {};
+  const questionPhotoIdx: Record<string, number | null> = {};
 
   for (const q of QUESTIONS) {
     // Exact match first
@@ -77,6 +101,8 @@ export function parsePerigeeExport(buffer: Buffer): ParseResult {
 
     questionColIdx[q.id] = idx;
     questionCommentIdx[q.id] = idx !== null ? findCommentIdx(headers, idx) : null;
+    questionSkuIdx[q.id] = idx !== null ? findSkuIdx(headers, idx) : null;
+    questionPhotoIdx[q.id] = idx !== null ? findPhotoIdx(headers, idx) : null;
   }
 
   // Overall General Comments column
@@ -93,6 +119,7 @@ export function parsePerigeeExport(buffer: Buffer): ParseResult {
     storeCode: headerIdxMap['Store Code'] ?? 7,
     province: headerIdxMap['Province'] ?? 8,
     date: headerIdxMap['Date'] ?? 9,
+    visitUUID: headerIdxMap['Visit UUID'] ?? null,
   };
 
   const repsMap: Map<string, Rep> = new Map();
@@ -125,9 +152,11 @@ export function parsePerigeeExport(buffer: Buffer): ParseResult {
 
     if (channel) channelSet.add(channel);
 
-    // Parse answers and comments for each question
+    // Parse answers, comments, SKUs and photo URLs for each question
     const answers: Record<string, string | null> = {};
     const comments: Record<string, string> = {};
+    const skus: Record<string, string> = {};
+    const photoUrls: Record<string, string> = {};
 
     for (const q of QUESTIONS) {
       const ci = questionColIdx[q.id];
@@ -144,6 +173,12 @@ export function parsePerigeeExport(buffer: Buffer): ParseResult {
       } else {
         comments[q.id] = '';
       }
+
+      const si = questionSkuIdx[q.id];
+      skus[q.id] = si !== null && si !== undefined ? String(row[si] ?? '').trim() : '';
+
+      const pi = questionPhotoIdx[q.id];
+      photoUrls[q.id] = pi !== null && pi !== undefined ? String(row[pi] ?? '').trim() : '';
     }
 
     const overallComment =
@@ -160,8 +195,11 @@ export function parsePerigeeExport(buffer: Buffer): ParseResult {
       province,
       date: dateRaw,
       dateObj: parseDDMMYYYY(dateRaw),
+      visitUUID: COL.visitUUID !== null ? String(row[COL.visitUUID] ?? '').trim() || undefined : undefined,
       answers,
       comments,
+      skus,
+      photoUrls,
       overallComment,
     });
   }

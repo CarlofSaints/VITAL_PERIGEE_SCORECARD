@@ -28,7 +28,7 @@ function getScore(
   answer: string | null,
   inverted: boolean
 ): { score: number | null; outOf: number } {
-  if (!answer) return { score: null, outOf: 0 };
+  if (!answer || answer.toLowerCase() === 'n/a') return { score: null, outOf: 0 };
   const isYes = answer.toLowerCase() === 'yes';
   const good = inverted ? !isYes : isYes;
   return { score: good ? 1 : 0, outOf: 1 };
@@ -36,6 +36,11 @@ function getScore(
 
 function solidFill(argb: string): ExcelJS.Fill {
   return { type: 'pattern', pattern: 'solid', fgColor: { argb } };
+}
+
+// Safe Excel sheet name (max 31 chars, no special chars)
+function safeSheetName(name: string): string {
+  return name.slice(0, 31).replace(/[:\\/?*[\]]/g, ' ').trim();
 }
 
 // Column letter: 1=A, 27=AA, …
@@ -95,6 +100,7 @@ function buildStoreSheet(
   repDateRng: { from: string; to: string }
 ) {
   const ws = wb.addWorksheet(sheetName);
+  ws.views = [{ state: 'frozen', ySplit: 5, showGridLines: false }];
   const visit = sd.visit;
 
   ws.getColumn(1).width = 52;
@@ -103,17 +109,26 @@ function buildStoreSheet(
   ws.getColumn(4).width = 8;
   ws.getColumn(5).width = 8;
   ws.getColumn(6).width = 38;
+  ws.getColumn(7).width = 32;
+  ws.getColumn(8).width = 36;
 
   const hr = (argb: string) => solidFill(argb);
 
-  // Row 1: Title
+  // Row 1: Title + HOME button
   ws.getRow(1).height = 30;
-  ws.mergeCells('A1:F1');
+  ws.mergeCells('A1:H1');
   const t = ws.getCell('A1');
   t.value = 'RETAIL SCORECARD';
   t.font = { bold: true, size: 16, color: { argb: WHITE } };
   t.fill  = hr(VITAL_RED);
   t.alignment = { horizontal: 'center', vertical: 'middle' };
+
+  ws.getColumn(9).width = 10;
+  const homeCell = ws.getCell('I1');
+  homeCell.value = { text: '← HOME', hyperlink: '#TOTAL!A1' };
+  homeCell.font  = { bold: true, size: 9, color: { argb: WHITE } };
+  homeCell.fill  = hr(DARK_GRAY);
+  homeCell.alignment = { horizontal: 'center', vertical: 'middle' };
 
   // Row 2: DATE / DATE RANGE / COMPLETED BY
   ws.getRow(2).height = 20;
@@ -128,7 +143,7 @@ function buildStoreSheet(
   ws.getCell('C2').fill  = hr(LIGHT_GRAY);
   ws.getCell('C2').alignment = { vertical: 'middle' };
 
-  ws.mergeCells('D2:F2');
+  ws.mergeCells('D2:H2');
   ws.getCell('D2').value = `COMPLETED BY: ${visit.repFirstName} ${visit.repLastName}`;
   ws.getCell('D2').font  = { bold: true, size: 10, color: { argb: DARK_GRAY } };
   ws.getCell('D2').fill  = hr(LIGHT_GRAY);
@@ -141,7 +156,7 @@ function buildStoreSheet(
   ws.getCell('A3').font  = { bold: true, size: 10, color: { argb: DARK_GRAY } };
   ws.getCell('A3').fill  = hr(LIGHT_GRAY);
   ws.getCell('A3').alignment = { vertical: 'middle' };
-  ws.mergeCells('C3:F3');
+  ws.mergeCells('C3:H3');
   ws.getCell('C3').value = visit.store;
   ws.getCell('C3').font  = { bold: true, size: 10, color: { argb: DARK_GRAY } };
   ws.getCell('C3').fill  = hr(LIGHT_GRAY);
@@ -159,7 +174,7 @@ function buildStoreSheet(
   ws.getCell('C4').font  = { size: 9, color: { argb: DARK_GRAY } };
   ws.getCell('C4').fill  = hr(LIGHT_GRAY);
   ws.getCell('C4').alignment = { vertical: 'middle' };
-  ws.mergeCells('E4:F4');
+  ws.mergeCells('E4:H4');
   ws.getCell('E4').value = `CHANNEL: ${visit.channel}`;
   ws.getCell('E4').font  = { size: 9, color: { argb: DARK_GRAY } };
   ws.getCell('E4').fill  = hr(LIGHT_GRAY);
@@ -173,7 +188,7 @@ function buildStoreSheet(
   qhdr.font  = { bold: true, size: 9, color: { argb: WHITE } };
   qhdr.fill  = hr(DARK_GRAY);
   qhdr.alignment = { horizontal: 'center', vertical: 'middle' };
-  for (const [col, lbl] of [['D5','MAX'],['E5','SCORE'],['F5','COMMENTS']] as const) {
+  for (const [col, lbl] of [['D5','MAX'],['E5','SCORE'],['F5','COMMENTS'],['G5',"SKU'S"],['H5','PIC URL']] as const) {
     ws.getCell(col).value = lbl;
     ws.getCell(col).font  = { bold: true, size: 9, color: { argb: WHITE } };
     ws.getCell(col).fill  = hr(DARK_GRAY);
@@ -188,7 +203,7 @@ function buildStoreSheet(
     if (q.section !== currentSection) {
       currentSection = q.section;
       ws.getRow(rowIdx).height = 18;
-      ws.mergeCells(`A${rowIdx}:F${rowIdx}`);
+      ws.mergeCells(`A${rowIdx}:H${rowIdx}`);
       const s = ws.getCell(`A${rowIdx}`);
       s.value = q.section;
       s.font  = { bold: true, size: 10, color: { argb: WHITE } };
@@ -200,6 +215,8 @@ function buildStoreSheet(
     const answer  = visit.answers[q.id] ?? null;
     const { score, outOf } = getScore(answer, q.inverted ?? false);
     const comment = visit.comments[q.id] ?? '';
+    const skuRaw  = visit.skus?.[q.id] ?? '';
+    const photoUrl = visit.photoUrls?.[q.id] ?? '';
     const rowBg   = rowIdx % 2 === 0 ? LIGHT_GRAY : 'FFFFFFFF';
 
     ws.getRow(rowIdx).height = 32;
@@ -237,6 +254,25 @@ function buildStoreSheet(
     cc.fill  = hr(rowBg);
     cc.alignment = { horizontal: 'left', vertical: 'middle', wrapText: true };
 
+    // SKU's column — replace pipe separators with newlines for readability
+    const gc = ws.getCell(`G${rowIdx}`);
+    gc.value = skuRaw ? skuRaw.replace(/\|/g, '\n') : '';
+    gc.font  = { size: 8, color: { argb: DARK_GRAY } };
+    gc.fill  = hr(rowBg);
+    gc.alignment = { horizontal: 'left', vertical: 'middle', wrapText: true };
+
+    // PIC URL column — clickable hyperlink if present
+    const hc = ws.getCell(`H${rowIdx}`);
+    if (photoUrl) {
+      hc.value = { text: 'View Photo', hyperlink: photoUrl };
+      hc.font  = { size: 8, underline: true, color: { argb: 'FF0563C1' } };
+    } else {
+      hc.value = '';
+      hc.font  = { size: 8, color: { argb: DARK_GRAY } };
+    }
+    hc.fill  = hr(rowBg);
+    hc.alignment = { horizontal: 'center', vertical: 'middle' };
+
     rowIdx++;
   }
 
@@ -256,6 +292,10 @@ function buildStoreSheet(
     v.font  = { bold: true, size: 10, color: { argb: pctFmt ? scoreColor(sd.pct) : DARK_GRAY } };
     v.fill  = hr(LIGHT_GRAY);
     v.alignment = { horizontal: 'center', vertical: 'middle' };
+    // Fill remaining columns for clean look
+    for (const col of ['F', 'G', 'H']) {
+      ws.getCell(`${col}${rowIdx}`).fill = hr(DARK_GRAY);
+    }
     rowIdx++;
   };
 
@@ -267,7 +307,7 @@ function buildStoreSheet(
   if (visit.overallComment) {
     rowIdx++;
     ws.getRow(rowIdx).height = 16;
-    ws.mergeCells(`A${rowIdx}:F${rowIdx}`);
+    ws.mergeCells(`A${rowIdx}:H${rowIdx}`);
     const cl = ws.getCell(`A${rowIdx}`);
     cl.value = 'GENERAL COMMENTS:';
     cl.font  = { bold: true, size: 10, color: { argb: WHITE } };
@@ -276,7 +316,7 @@ function buildStoreSheet(
     rowIdx++;
 
     ws.getRow(rowIdx).height = 60;
-    ws.mergeCells(`A${rowIdx}:F${rowIdx}`);
+    ws.mergeCells(`A${rowIdx}:H${rowIdx}`);
     const cv = ws.getCell(`A${rowIdx}`);
     cv.value = visit.overallComment;
     cv.font  = { size: 9, italic: true, color: { argb: DARK_GRAY } };
@@ -299,11 +339,13 @@ function buildTotalSheet(
   const overallOutOf  = stores.reduce((s, st) => s + st.outOf, 0);
   const overallPct    = overallOutOf > 0 ? overallScore / overallOutOf : 0;
 
+  ws.views = [{ state: 'frozen', ySplit: 2, showGridLines: false }];
+
   // Column widths
   ws.getColumn(1).width = 50;
   ws.getColumn(2).width = 4;
   ws.getColumn(3).width = 14;
-  for (let i = 4; i <= 3 + n; i++) ws.getColumn(i).width = 18;
+  for (let i = 4; i <= 3 + n; i++) ws.getColumn(i).width = 7.15;
 
   const hr = (argb: string) => solidFill(argb);
 
@@ -331,21 +373,21 @@ function buildTotalSheet(
   for (let i = 5; i <= 3 + n; i++) ws.getCell(1, i).fill = hr(HEADER_BG);
 
   // ── Row 2: Overall score + store names ────────────────────────────────────────
-  ws.getRow(2).height = 90;
+  ws.getRow(2).height = 150;
   ws.mergeCells('A2:C2');
   const scoreCell = ws.getCell('A2');
   scoreCell.value  = overallPct;
   scoreCell.numFmt = '0.0%';
-  scoreCell.font   = { bold: true, size: 72, color: { argb: scoreColor(overallPct) } };
+  scoreCell.font   = { bold: true, size: 60, color: { argb: scoreColor(overallPct) } };
   scoreCell.alignment = { horizontal: 'center', vertical: 'middle' };
   scoreCell.fill  = hr(LIGHT_GRAY);
 
   stores.forEach((st, i) => {
     const c = ws.getCell(2, 4 + i);
-    c.value = st.name;
+    c.value = { text: st.name, hyperlink: `#'${safeSheetName(st.name)}'!A1` };
     c.font  = { bold: true, size: 9, color: { argb: WHITE } };
     c.fill  = hr(DARK_GRAY);
-    c.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+    c.alignment = { horizontal: 'center', vertical: 'bottom', textRotation: 90 };
   });
 
   // ── Rows 3+: Sections + questions ────────────────────────────────────────────
@@ -474,8 +516,7 @@ export async function buildRepReport(
 
   // Add individual store sheets
   for (const sd of stores) {
-    const safeName = sd.name.slice(0, 31).replace(/[:\\/?*[\]]/g, ' ').trim();
-    buildStoreSheet(wb, safeName, sd, submissionDate, repDateRng);
+    buildStoreSheet(wb, safeSheetName(sd.name), sd, submissionDate, repDateRng);
   }
 
   const buffer = await wb.xlsx.writeBuffer();
