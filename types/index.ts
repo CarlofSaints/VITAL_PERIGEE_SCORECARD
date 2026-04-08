@@ -5,6 +5,13 @@ export interface Rep {
   fullName: string;
 }
 
+export interface OrphanPhoto {
+  /** Base photo column header from the raw export (e.g. "Photo stock pressure"). */
+  header: string;
+  /** URL from the cell. */
+  url: string;
+}
+
 export interface StoreVisit {
   repEmail: string;
   repFirstName: string;
@@ -20,7 +27,13 @@ export interface StoreVisit {
   answers: Record<string, string | null>; // questionId → 'Yes'|'No'|null
   comments: Record<string, string>; // questionId → comment text
   skus: Record<string, string>; // questionId → pipe-separated SKU list (from "Select…" columns)
-  photoUrls: Record<string, string>; // questionId → photo URL (from "Photo…" columns)
+  /** questionId → ordered, deduped list of photo URLs (collected from all
+   *  matching "Photo Xyz" and "Photo Xyz [N]" columns in the raw export). */
+  photoUrls: Record<string, string[]>;
+  /** Photos from columns whose base header doesn't map to any scorecard
+   *  question (e.g. "Photo stock pressure"). Shown on the "Photos with no
+   *  question" sheet of the Exception Report. */
+  orphanPhotos: OrphanPhoto[];
   overallComment: string;
 }
 

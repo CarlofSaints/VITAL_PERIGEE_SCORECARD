@@ -250,10 +250,12 @@ function buildStoreSheet(
     const { score, outOf } = getScore(answer, q.inverted ?? false);
     const comment = visit.comments[q.id] ?? '';
     const skuRaw  = visit.skus?.[q.id] ?? '';
-    const photoUrl = visit.photoUrls?.[q.id] ?? '';
+    const photoList = visit.photoUrls?.[q.id] ?? [];
     const rowBg   = rowIdx % 2 === 0 ? LIGHT_GRAY : 'FFFFFFFF';
 
-    ws.getRow(rowIdx).height = 32;
+    // Row height grows to fit extra photo URLs (16pt per line, min 32pt)
+    const extraPhotoLines = Math.max(0, photoList.length - 1);
+    ws.getRow(rowIdx).height = Math.max(32, 32 + extraPhotoLines * 14);
     ws.mergeCells(`A${rowIdx}:B${rowIdx}`);
     const qc = ws.getCell(`A${rowIdx}`);
     qc.value = q.text;
@@ -295,17 +297,31 @@ function buildStoreSheet(
     gc.fill  = hr(rowBg);
     gc.alignment = { horizontal: 'left', vertical: 'middle', wrapText: true };
 
-    // PIC URL column — clickable hyperlink if present
+    // PIC URL column — photo access
+    //   0 photos:    blank
+    //   1 photo:     single "View Photo" hyperlink
+    //   2+ photos:   cell is hyperlinked to photo #1, text lists all URLs
+    //                on separate lines (only the first is clickable natively,
+    //                but all URLs are visible for copy/paste).
     const hc = ws.getCell(`H${rowIdx}`);
-    if (photoUrl) {
-      hc.value = { text: 'View Photo', hyperlink: photoUrl };
-      hc.font  = { size: 8, underline: true, color: { argb: 'FF0563C1' } };
-    } else {
+    if (photoList.length === 0) {
       hc.value = '';
       hc.font  = { size: 8, color: { argb: DARK_GRAY } };
+      hc.alignment = { horizontal: 'center', vertical: 'middle' };
+    } else if (photoList.length === 1) {
+      hc.value = { text: 'View Photo', hyperlink: photoList[0] };
+      hc.font  = { size: 8, underline: true, color: { argb: 'FF0563C1' } };
+      hc.alignment = { horizontal: 'center', vertical: 'middle' };
+    } else {
+      const lines = [`View Photo 1 of ${photoList.length}`];
+      for (let i = 1; i < photoList.length; i++) {
+        lines.push(`Photo ${i + 1}: ${photoList[i]}`);
+      }
+      hc.value = { text: lines.join('\n'), hyperlink: photoList[0] };
+      hc.font  = { size: 8, underline: true, color: { argb: 'FF0563C1' } };
+      hc.alignment = { horizontal: 'left', vertical: 'top', wrapText: true };
     }
     hc.fill  = hr(rowBg);
-    hc.alignment = { horizontal: 'center', vertical: 'middle' };
 
     rowIdx++;
   }

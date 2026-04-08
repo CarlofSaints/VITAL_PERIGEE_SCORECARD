@@ -1,6 +1,6 @@
 import * as XLSX from 'xlsx';
 import { QUESTIONS } from '@/constants/questions';
-import type { ParseResult, Rep, StoreVisit } from '@/types';
+import type { OrphanPhoto, ParseResult, Rep, StoreVisit } from '@/types';
 
 function parseDDMMYYYY(dateStr: string): Date {
   if (!dateStr) return new Date(0);
@@ -46,15 +46,21 @@ function findSkuIdx(headers: string[], questionIdx: number): number | null {
   return null;
 }
 
-// Find the first "Photo…" column after a question (image URL)
-function findPhotoIdx(headers: string[], questionIdx: number): number | null {
-  for (let i = questionIdx + 1; i < headers.length; i++) {
-    const h = headers[i] ?? '';
-    if (/^photo\b/i.test(h)) return i;
-    if (/^comments?[,\s]/i.test(h) || /^overall general/i.test(h)) return null;
-    if (/^(Is |Has |Are |Do |Does )/i.test(h)) return null;
-  }
-  return null;
+/**
+ * Normalise a "Photo …" column header by stripping any trailing "[N]" suffix
+ * and collapsing whitespace. Used to group e.g. `Photo multi placements`,
+ * `Photo multi placements [2]`, `Photo multi placements [3]` under the same
+ * base name "Photo multi placements".
+ */
+function normalisePhotoHeader(header: string): string {
+  return header.replace(/\s*\[\d+\]\s*$/, '').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Is this header a photo column? Matches "Photo …" (case-insensitive).
+ */
+function isPhotoHeader(header: string): boolean {
+  return /^photo\b/i.test(header);
 }
 
 export function parsePerigeeExport(buffer: Buffer): ParseResult {
@@ -73,11 +79,33 @@ export function parsePerigeeExport(buffer: Buffer): ParseResult {
     if (h && !headerIdxMap[h]) headerIdxMap[h] = i; // first occurrence wins
   });
 
+  // ── Photo column discovery ────────────────────────────────────────────────
+  // Photos live in an upfront batch in the Perigee export (cols S–AX typically)
+  // and are NOT adjacent to their questions. Multi-photo questions use
+  // " [2]", " [3]" … " [N]" suffixes. Scan headers once and bucket columns by
+  // their normalised base name so we can look up all photo columns for a
+  // question directly by its `photoHeader`.
+  const photoColumnsByBase: Record<string, number[]> = {};
+  for (let i = 0; i < headers.length; i++) {
+    const h = headers[i];
+    if (!isPhotoHeader(h)) continue;
+    const base = normalisePhotoHeader(h);
+    if (!base) continue;
+    if (!photoColumnsByBase[base]) photoColumnsByBase[base] = [];
+    photoColumnsByBase[base].push(i);
+  }
+
+  // Track which photo bases are claimed by a scorecard question. Anything
+  // that's NOT claimed becomes an "orphan" photo and flows to the
+  // "Photos with no question" sheet on the exception report.
+  const claimedPhotoBases = new Set<string>();
+
   // Find column indices for each question (case-insensitive partial match fallback)
   const questionColIdx: Record<string, number | null> = {};
   const questionCommentIdx: Record<string, number | null> = {};
   const questionSkuIdx: Record<string, number | null> = {};
-  const questionPhotoIdx: Record<string, number | null> = {};
+  /** Photo columns per question — ordered list (all [N] variants included). */
+  const questionPhotoCols: Record<string, number[]> = {};
 
   for (const q of QUESTIONS) {
     // Exact match first
@@ -102,7 +130,40 @@ export function parsePerigeeExport(buffer: Buffer): ParseResult {
     questionColIdx[q.id] = idx;
     questionCommentIdx[q.id] = idx !== null ? findCommentIdx(headers, idx) : null;
     questionSkuIdx[q.id] = idx !== null ? findSkuIdx(headers, idx) : null;
-    questionPhotoIdx[q.id] = idx !== null ? findPhotoIdx(headers, idx) : null;
+
+    // Look up photo columns directly by the question's base photo header.
+    // Uses case-insensitive base-name match so minor typo drift in the raw
+    // export doesn't break mapping.
+    if (q.photoHeader) {
+      const targetBase = normalisePhotoHeader(q.photoHeader);
+      let cols: number[] | undefined = photoColumnsByBase[targetBase];
+      if (!cols) {
+        // Case-insensitive fallback
+        const lcTarget = targetBase.toLowerCase();
+        for (const [base, list] of Object.entries(photoColumnsByBase)) {
+          if (base.toLowerCase() === lcTarget) { cols = list; break; }
+        }
+      }
+      if (cols && cols.length) {
+        questionPhotoCols[q.id] = cols.slice();
+        claimedPhotoBases.add(
+          // Mark whichever base key we matched as claimed
+          Object.keys(photoColumnsByBase).find((k) => photoColumnsByBase[k] === cols) ?? targetBase
+        );
+      } else {
+        questionPhotoCols[q.id] = [];
+      }
+    } else {
+      questionPhotoCols[q.id] = [];
+    }
+  }
+
+  // Build the list of orphan photo bases (photo columns with no question mapping).
+  const orphanPhotoBases: { base: string; cols: number[] }[] = [];
+  for (const [base, cols] of Object.entries(photoColumnsByBase)) {
+    if (!claimedPhotoBases.has(base)) {
+      orphanPhotoBases.push({ base, cols });
+    }
   }
 
   // Overall General Comments column
@@ -156,7 +217,7 @@ export function parsePerigeeExport(buffer: Buffer): ParseResult {
     const answers: Record<string, string | null> = {};
     const comments: Record<string, string> = {};
     const skus: Record<string, string> = {};
-    const photoUrls: Record<string, string> = {};
+    const photoUrls: Record<string, string[]> = {};
 
     for (const q of QUESTIONS) {
       const ci = questionColIdx[q.id];
@@ -177,8 +238,35 @@ export function parsePerigeeExport(buffer: Buffer): ParseResult {
       const si = questionSkuIdx[q.id];
       skus[q.id] = si !== null && si !== undefined ? String(row[si] ?? '').trim() : '';
 
-      const pi = questionPhotoIdx[q.id];
-      photoUrls[q.id] = pi !== null && pi !== undefined ? String(row[pi] ?? '').trim() : '';
+      // Collect all non-empty photo URLs for this question, deduping by URL
+      // so duplicate columns (same content in the upfront batch and again in
+      // an inline trailing column) don't double-up.
+      const cols = questionPhotoCols[q.id];
+      const urls: string[] = [];
+      const seen = new Set<string>();
+      for (const pi of cols) {
+        const val = String(row[pi] ?? '').trim();
+        if (val && !seen.has(val)) {
+          seen.add(val);
+          urls.push(val);
+        }
+      }
+      photoUrls[q.id] = urls;
+    }
+
+    // Orphan photos: columns whose base header doesn't map to any question.
+    // Preserve the original-order header (first occurrence) for display.
+    const orphanPhotos: OrphanPhoto[] = [];
+    const orphanSeen = new Set<string>();
+    for (const { base, cols } of orphanPhotoBases) {
+      for (const pi of cols) {
+        const val = String(row[pi] ?? '').trim();
+        if (!val) continue;
+        const dedupKey = `${base}||${val}`;
+        if (orphanSeen.has(dedupKey)) continue;
+        orphanSeen.add(dedupKey);
+        orphanPhotos.push({ header: base, url: val });
+      }
     }
 
     const overallComment =
@@ -200,6 +288,7 @@ export function parsePerigeeExport(buffer: Buffer): ParseResult {
       comments,
       skus,
       photoUrls,
+      orphanPhotos,
       overallComment,
     });
   }
