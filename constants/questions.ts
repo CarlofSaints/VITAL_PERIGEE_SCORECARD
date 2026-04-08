@@ -3,6 +3,13 @@ export interface QuestionDef {
   section: string;
   text: string; // scorecard display text
   rawHeader: string; // exact column header in Perigee export
+  /**
+   * Base header (without " [N]" suffix) of the photo column(s) for this
+   * question in the Perigee export. Photo columns live in an upfront batch
+   * and can have multiple "Name [2]", "Name [3]" variants for extra photos.
+   * Leave blank if the question has no associated photo column.
+   */
+  photoHeader?: string;
   inverted?: boolean; // No = good (store manager question)
   optional?: boolean; // not yet in raw data – shows as N/A until added
 }
@@ -24,24 +31,28 @@ export const QUESTIONS: QuestionDef[] = [
     section: 'ON SHELF AVAILABILITY',
     text: "Are all ranged SKU's on shelf",
     rawHeader: "Are all ranged SKU's on shelf?",
+    photoHeader: "Photo all ranged SKU's",
   },
   {
     id: 'osa-flow',
     section: 'ON SHELF AVAILABILITY',
     text: 'Is the correct merchandising flow implemented',
     rawHeader: 'Is the correct merchandising flow implemented?',
+    photoHeader: 'Photo Merchandising flow',
   },
   {
     id: 'osa-oos',
     section: 'ON SHELF AVAILABILITY',
     text: "Has OOS SKU's been flagged to relevant manager",
     rawHeader: "Has OOS SKU's been flagged to relevant manager?",
+    photoHeader: "Photo Out of stock sku's",
   },
   {
     id: 'osa-npd',
     section: 'ON SHELF AVAILABILITY',
     text: 'Is the relevant NPD on shelf',
     rawHeader: 'Is the relevant NPD on shelf?',
+    photoHeader: 'Photo NPD',
   },
   {
     id: 'osa-backup',
@@ -72,12 +83,14 @@ export const QUESTIONS: QuestionDef[] = [
     section: 'PRICING',
     text: "Do all Vital SKU's have PI labels on shelf",
     rawHeader: "Do all Vital SKU's have PI labels on shelf?",
+    photoHeader: 'Photo PI labels',
   },
   {
     id: 'price-correct',
     section: 'PRICING',
     text: 'Is the price updated and correct',
     rawHeader: 'Is the price updated and correct?',
+    photoHeader: 'Photo pricing update',
   },
   {
     id: 'price-files',
@@ -101,18 +114,21 @@ export const QUESTIONS: QuestionDef[] = [
     section: 'SHELF HEALTH',
     text: 'Are all product clean and presentable',
     rawHeader: 'Are all product on shelf clean and presentable?',
+    photoHeader: 'Photo product on shelf',
   },
   {
     id: 'sh-fifo',
     section: 'SHELF HEALTH',
     text: 'Has the FIFO (First In First Out) rule been applied',
     rawHeader: 'Has the FIFO (First In First Out) rule been applied?',
+    photoHeader: 'Photo FIFO rule',
   },
   {
     id: 'sh-shortdated',
     section: 'SHELF HEALTH',
     text: 'Has short dated stock issues been raised with Rep/Vital FSC',
     rawHeader: 'Has short dated stock issues been raised with Rep / Vital FSC?',
+    photoHeader: 'Photo short dated stock issues',
   },
   {
     id: 'sh-expired',
@@ -120,12 +136,14 @@ export const QUESTIONS: QuestionDef[] = [
     text: 'Has expired stock been removed and claim raised',
     rawHeader:
       'Has all damages and expired stock been marked down or written up as required',
+    photoHeader: 'Photo damaged and expired stock',
   },
   {
     id: 'sh-expired-check',
     section: 'SHELF HEALTH',
     text: 'Is there any expired stock on shelf or in store rooms',
     rawHeader: 'Has expired stock been found on shelf or in the backup area',
+    photoHeader: 'Photo short dated stock issues shelf or backup area',
     inverted: true,
     optional: true,
   },
@@ -143,12 +161,14 @@ export const QUESTIONS: QuestionDef[] = [
     text: 'Has there been any forward share gains in the store on the home shelf space',
     rawHeader:
       'Has there been any forward share gains in the store on the home shelf?',
+    photoHeader: 'Photo forward share gains',
   },
   {
     id: 'mp-identified',
     section: 'MULTI PLACEMENTS / FORWARD SHARE',
     text: 'Has any multi placements been identified and shared with the relevant manager in store',
     rawHeader: 'Has any multi placements been identified and implemented',
+    photoHeader: 'Photo multi placements',
   },
 
   // ── POS ───────────────────────────────────────────────────────────────────
@@ -174,6 +194,7 @@ export const QUESTIONS: QuestionDef[] = [
     text: 'Is there any additional opportunities that has been identified that need to be implemented',
     rawHeader:
       'Is there any additional opportunities that has been identified that need to be implemented',
+    photoHeader: 'Photo additional opportunities',
   },
 ];
 
