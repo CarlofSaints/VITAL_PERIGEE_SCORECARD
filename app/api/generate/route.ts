@@ -6,6 +6,7 @@ import { uploadReport, uploadExceptionReport } from '@/lib/sharepoint';
 import { sendReports, sendRepEmail, sendExceptionReport, type RepStat, type ChannelStat } from '@/lib/mailer';
 import { appendToHistory } from '@/lib/history';
 import { appendActivityLog, type LogReport } from '@/lib/activityLog';
+import { loadAliases } from '@/lib/aliases';
 import { QUESTIONS } from '@/constants/questions';
 import type { GenerateResult, StoreVisit } from '@/types';
 
@@ -104,6 +105,22 @@ export async function POST(req: NextRequest) {
 
     const dateRange = `${parsed.dateRange.from} – ${parsed.dateRange.to}`;
 
+    // Load alias map once for this request (used when emailToReps is on)
+    let aliasMap = new Map<string, string>();
+    if (emailToReps) {
+      try {
+        const aliasFile = await loadAliases();
+        for (const e of aliasFile.entries) {
+          if (e.aliasEmail && e.aliasEmail.trim()) {
+            aliasMap.set(e.dataEmail, e.aliasEmail.trim());
+          }
+        }
+      } catch (err) {
+        console.error('[generate] loadAliases failed:', err instanceof Error ? err.message : err);
+        aliasMap = new Map();
+      }
+    }
+
     for (const repEmail of repEmails) {
       const repVisits = filteredVisits.filter((v) => v.repEmail === repEmail);
       const repInfo   = parsed.reps.find((r) => r.email === repEmail);
@@ -148,9 +165,11 @@ export async function POST(req: NextRequest) {
       // Send individual rep email
       if (emailToReps && repInfo.email) {
         const { avgPct, visitCount, storeCount } = calcRepScoreInfo(repVisits);
+        const aliasEmail = aliasMap.get(repInfo.email.toLowerCase()) || undefined;
         try {
           await sendRepEmail({
             toEmail: repInfo.email,
+            aliasEmail,
             ccEmail: ccEmail || undefined,
             repFirstName: repInfo.firstName,
             dateRange,
@@ -162,6 +181,7 @@ export async function POST(req: NextRequest) {
           result.repEmailSent = true;
           logReport.repEmailSent = true;
           logReport.repEmailTo = repInfo.email;
+          if (aliasEmail) logReport.repEmailAlias = aliasEmail;
           if (ccEmail) logReport.repEmailCc = ccEmail;
         } catch (err: unknown) {
           result.repEmailError = err instanceof Error ? err.message : String(err);

@@ -310,6 +310,7 @@ interface ParsedMeta {
   channels: string[];
   dateRange: { from: string; to: string };
   rowCount: number;
+  newEmails?: { dataEmail: string; displayName?: string }[];
 }
 
 interface GenerateResult {
@@ -588,6 +589,9 @@ export default function Home() {
         <div className="max-w-4xl mx-auto px-6 py-4 flex items-center justify-between">
           <Image src="/vital-logo.png" alt="Vital" width={120} height={48} className="object-contain" />
           <div className="flex items-center gap-6">
+            <Link href="/admin/aliases" className="text-sm text-[#32373C] hover:text-[#DA291C] font-medium transition-colors">
+              Email Aliases
+            </Link>
             <Link href="/log" className="text-sm text-[#32373C] hover:text-[#DA291C] font-medium transition-colors">
               Activity Log
             </Link>
@@ -673,6 +677,37 @@ export default function Home() {
           {/* Steps 2-5: only show after parse */}
           {parsedMeta && (
             <>
+              {/* New-email warning — shown when uploaded data contains emails not yet in the alias store */}
+              {parsedMeta.newEmails && parsedMeta.newEmails.length > 0 && (
+                <div className="bg-amber-50 border border-amber-300 rounded-xl p-5">
+                  <div className="flex items-start gap-3">
+                    <div className="flex-shrink-0 w-8 h-8 rounded-full bg-amber-400 text-white flex items-center justify-center font-bold text-sm">!</div>
+                    <div className="flex-1 min-w-0">
+                      <h3 className="text-sm font-bold text-amber-900">
+                        {parsedMeta.newEmails.length} new email{parsedMeta.newEmails.length === 1 ? '' : 's'} detected in this data
+                      </h3>
+                      <p className="text-xs text-amber-800 mt-1">
+                        These rep email addresses don&apos;t have an alias set yet. Add an alias so each rep&apos;s report is also sent to their current address.
+                      </p>
+                      <div className="mt-3 max-h-28 overflow-y-auto rounded border border-amber-200 bg-white/60 divide-y divide-amber-100">
+                        {parsedMeta.newEmails.map((e) => (
+                          <div key={e.dataEmail} className="px-3 py-1.5 text-xs">
+                            <span className="font-semibold text-amber-900">{e.displayName || '(no name)'}</span>
+                            <span className="text-amber-700"> · {e.dataEmail}</span>
+                          </div>
+                        ))}
+                      </div>
+                      <Link
+                        href="/admin/aliases"
+                        className="inline-block mt-3 px-4 py-1.5 bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold rounded-lg transition"
+                      >
+                        Manage Aliases →
+                      </Link>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {/* Step 2: Reps */}
               <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
                 <h2 className="text-base font-bold text-[#32373C] mb-4 flex items-center gap-2">
@@ -779,6 +814,10 @@ export default function Home() {
                       <span className="text-sm font-semibold text-[#32373C]">Email to Reps</span>
                       <p className="text-xs text-gray-500 mt-0.5">
                         Send each rep their own report to the email address in the data. The email is personalised with their name and score summary.
+                      </p>
+                      <p className="text-xs text-gray-500 mt-1">
+                        If a rep has an alias set, both addresses will receive the email.{' '}
+                        <Link href="/admin/aliases" className="text-[#DA291C] underline">Manage aliases</Link>.
                       </p>
                     </div>
                   </label>

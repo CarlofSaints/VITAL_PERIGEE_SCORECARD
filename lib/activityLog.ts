@@ -17,6 +17,7 @@ export interface LogReport {
   spError?: string;
   repEmailSent?: boolean;
   repEmailTo?: string;
+  repEmailAlias?: string;
   repEmailCc?: string;
   repEmailError?: string;
   success: boolean;

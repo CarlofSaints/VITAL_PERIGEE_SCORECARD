@@ -55,6 +55,8 @@ export interface ChannelStat {
 
 export interface RepEmailParams {
   toEmail: string;
+  /** Optional second TO recipient — used for the rep's alias / new email. */
+  aliasEmail?: string;
   ccEmail?: string;
   repFirstName: string;
   dateRange: string;    // "01 Mar 2026 – 31 Mar 2026"
@@ -72,7 +74,7 @@ function repScoreHexColor(pct: number): string {
 }
 
 export async function sendRepEmail(params: RepEmailParams): Promise<void> {
-  const { toEmail, ccEmail, repFirstName, dateRange, avgPct, visitCount, storeCount, attachment } = params;
+  const { toEmail, aliasEmail, ccEmail, repFirstName, dateRange, avgPct, visitCount, storeCount, attachment } = params;
   const token = await getToken();
   const subject = `Your Vital Score Card Report — ${dateRange}`;
   const vitalLogoB64   = loadLogoB64('vital-logo.png');
@@ -150,10 +152,19 @@ export async function sendRepEmail(params: RepEmailParams): Promise<void> {
     });
   }
 
+  // Build TO recipients — include the alias as an additional address if set
+  // and if it's not the same as the data email (case-insensitive).
+  const toRecipients: { emailAddress: { address: string } }[] = [
+    { emailAddress: { address: toEmail } },
+  ];
+  if (aliasEmail && aliasEmail.trim().toLowerCase() !== toEmail.trim().toLowerCase()) {
+    toRecipients.push({ emailAddress: { address: aliasEmail.trim() } });
+  }
+
   const message: Record<string, unknown> = {
     subject,
     body: { contentType: 'HTML', content: htmlBody },
-    toRecipients: [{ emailAddress: { address: toEmail } }],
+    toRecipients,
     attachments: [
       ...inlineAttachments,
       {
