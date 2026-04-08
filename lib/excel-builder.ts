@@ -43,6 +43,39 @@ function safeSheetName(name: string): string {
   return name.slice(0, 31).replace(/[:\\/?*[\]]/g, ' ').trim();
 }
 
+// Strip the first " - " separated prefix from a store name (typically the
+// channel, e.g. "PICK N PAY - CORPORATE VINCENT PARK" → "CORPORATE VINCENT PARK").
+// Falls back to the original if the strip would leave an empty string.
+function stripChannelPrefix(storeName: string): string {
+  const idx = storeName.indexOf(' - ');
+  if (idx < 0) return storeName.trim();
+  const stripped = storeName.slice(idx + 3).trim();
+  return stripped || storeName.trim();
+}
+
+// Build a unique Excel sheet name for a store, in the form
+//   "STORE NAME (CODE)"
+// while keeping to Excel's 31-char limit and stripping illegal characters.
+// Uses parentheses (not square brackets) because Excel disallows [ ] in sheet
+// names. Falls back gracefully when the store code is missing.
+function buildSheetName(storeName: string, storeCode: string): string {
+  const cleanBase = stripChannelPrefix(storeName)
+    .replace(/[:\\/?*[\]]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const cleanCode = (storeCode || '').replace(/[:\\/?*[\]()]/g, '').trim();
+
+  if (!cleanCode) return cleanBase.slice(0, 31).trim();
+
+  const suffix = ` (${cleanCode})`;
+  // Absurdly long code — fall back to just the truncated code
+  if (suffix.length >= 31) return suffix.trim().slice(0, 31);
+
+  const maxBase = 31 - suffix.length;
+  const truncated = cleanBase.slice(0, maxBase).trim();
+  return `${truncated}${suffix}`;
+}
+
 // Column letter: 1=A, 27=AA, …
 function colLetter(n: number): string {
   let r = '';
@@ -73,7 +106,8 @@ function repProvince(visits: StoreVisit[]): string {
 // ── Store score calculator ────────────────────────────────────────────────────
 
 interface StoreData {
-  name: string;
+  name: string;        // original full store name (e.g. "PICK N PAY - CORPORATE VINCENT PARK")
+  sheetName: string;   // unique Excel sheet tab name (max 31 chars, includes store code)
   visit: StoreVisit;
   score: number;
   outOf: number;
@@ -384,7 +418,7 @@ function buildTotalSheet(
 
   stores.forEach((st, i) => {
     const c = ws.getCell(2, 4 + i);
-    c.value = { text: st.name, hyperlink: `#'${safeSheetName(st.name)}'!A1` };
+    c.value = { text: st.sheetName, hyperlink: `#'${st.sheetName}'!A1` };
     c.font  = { bold: true, size: 9, color: { argb: WHITE } };
     c.fill  = hr(DARK_GRAY);
     c.alignment = { horizontal: 'center', vertical: 'bottom', textRotation: 90 };
@@ -496,27 +530,60 @@ export async function buildRepReport(
 
   const repDateRng = repDateRange(visits);
 
-  // Deduplicate: latest visit per store
+  // Deduplicate: latest visit per store+code composite key. Using the composite
+  // key is important because two different stores can share the same name but
+  // have different store codes (e.g. "PICK N PAY - CORPORATE VINCENT PARK" in
+  // EC vs PC province). Keying on name alone would collapse them.
   const storeMap = new Map<string, StoreVisit>();
   for (const v of visits) {
-    const existing = storeMap.get(v.store);
-    if (!existing || v.dateObj > existing.dateObj) storeMap.set(v.store, v);
+    const key = `${v.store}||${v.storeCode || ''}`;
+    const existing = storeMap.get(key);
+    if (!existing || v.dateObj > existing.dateObj) storeMap.set(key, v);
   }
 
-  const storeNames = Array.from(storeMap.keys()).sort();
-  const stores: StoreData[] = storeNames.map((name) => {
-    const visit = storeMap.get(name)!;
-    const { score, outOf, pct } = calcStoreScores(visit);
-    return { name, visit, score, outOf, pct };
-  });
+  // Build StoreData with resolved sheet names, then sort alphabetically.
+  const stores: StoreData[] = Array.from(storeMap.values())
+    .map((visit) => {
+      const { score, outOf, pct } = calcStoreScores(visit);
+      return {
+        name: visit.store,
+        sheetName: buildSheetName(visit.store, visit.storeCode),
+        visit,
+        score,
+        outOf,
+        pct,
+      };
+    })
+    .sort((a, b) => a.sheetName.localeCompare(b.sheetName));
+
+  // Guarantee uniqueness of sheet names. In the normal case each entry already
+  // has a unique "NAME (CODE)" suffix, but if two entries end up identical after
+  // truncation we append a numeric discriminator to keep exceljs happy.
+  const usedSheetNames = new Set<string>();
+  for (const sd of stores) {
+    let sn = sd.sheetName;
+    if (usedSheetNames.has(sn)) {
+      let i = 2;
+      // Reserve 4 chars for "-NN" suffix
+      const trimmed = sn.slice(0, 28).trim();
+      let candidate = `${trimmed}-${i}`;
+      while (usedSheetNames.has(candidate)) {
+        i++;
+        candidate = `${trimmed}-${i}`;
+      }
+      sn = candidate;
+    }
+    sd.sheetName = sn;
+    usedSheetNames.add(sn);
+  }
 
   // Add TOTAL sheet first (so it's tab 1)
   const totalWs = wb.addWorksheet('TOTAL');
   buildTotalSheet(totalWs, rep, stores, submissionDate, repDateRng);
 
-  // Add individual store sheets
+  // Add individual store sheets using the pre-resolved unique sheet names
   for (const sd of stores) {
-    buildStoreSheet(wb, safeSheetName(sd.name), sd, submissionDate, repDateRng);
+    buildStoreSheet(wb, sd.sheetName, sd, submissionDate, repDateRng);
   }
 
   const buffer = await wb.xlsx.writeBuffer();
