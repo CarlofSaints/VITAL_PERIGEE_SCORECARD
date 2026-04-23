@@ -88,6 +88,7 @@ export async function POST(req: NextRequest) {
     // Download history file — throws if it exists but can't be read
     let historyBuffer: Buffer | null;
     try {
+      console.log('[comparison] Downloading history file…');
       historyBuffer = await downloadHistoryFile();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -100,12 +101,15 @@ export async function POST(req: NextRequest) {
       }, { status: 400 });
     }
 
+    console.log(`[comparison] History file downloaded: ${(historyBuffer.length / 1024).toFixed(0)} KB`);
+
     const dateRangeLabel = `${formatDateDisplay(from)} – ${formatDateDisplay(to)}`;
     const fileName = `VITAL COMPARISON REPORT ${formatDateDisplay(from)} - ${formatDateDisplay(to)}.xlsx`;
     const periodDisplay = period.charAt(0).toUpperCase() + period.slice(1);
     const fromYear = from.getFullYear().toString();
 
     // Build Excel
+    console.log('[comparison] Building comparison report…');
     const excelBuffer = await buildComparisonReport({
       historyBuffer,
       from,
@@ -114,6 +118,8 @@ export async function POST(req: NextRequest) {
       dateRangeLabel,
       filters,
     });
+
+    console.log(`[comparison] Report built: ${(excelBuffer.length / 1024).toFixed(0)} KB`);
 
     // SharePoint upload
     let spUrl: string | undefined;

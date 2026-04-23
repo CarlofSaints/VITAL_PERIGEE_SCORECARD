@@ -97,6 +97,12 @@ function ComparisonReport() {
           },
         }),
       });
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        const text = await res.text();
+        setResult({ error: text.slice(0, 300) || `Server error (${res.status})` });
+        return;
+      }
       const data = await res.json();
       setResult(data);
     } catch (err: unknown) {
@@ -566,6 +572,11 @@ export default function Home() {
 
     try {
       const res  = await fetch('/api/generate', { method: 'POST', body: fd });
+      const ct = res.headers.get('content-type') || '';
+      if (!ct.includes('application/json')) {
+        const text = await res.text();
+        throw new Error(text.slice(0, 300) || `Server error (${res.status})`);
+      }
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Generation failed');
       setResults(data.results);

@@ -222,6 +222,7 @@ export async function POST(req: NextRequest) {
 
     if (includeExceptionReport) {
       try {
+        console.log(`[generate] Building exception report for ${filteredVisits.length} visits…`);
         const { buffer: exBuf, exceptionCount, sheetSummary } = await buildExceptionReport(filteredVisits, submissionDate);
         const exFileName = buildExceptionFileName(filteredVisits);
         const exFolderName = buildExceptionFolderName(filteredVisits);
