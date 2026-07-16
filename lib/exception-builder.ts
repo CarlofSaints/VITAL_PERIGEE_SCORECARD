@@ -1,5 +1,11 @@
 import ExcelJS from 'exceljs';
 import { QUESTIONS } from '@/constants/questions';
+import {
+  SHEET_NAMES,
+  SHEET_TO_QUESTION_ID,
+  DEFAULT_PHOTO_QUESTION_MAP,
+  normPhotoQuestion,
+} from '@/constants/sheets';
 import { formatDateDisplay } from './excel-parser';
 import type { StoreVisit } from '@/types';
 
@@ -8,36 +14,11 @@ const VITAL_RED  = 'FFDA291C';
 const WHITE      = 'FFFFFFFF';
 const DARK_GRAY  = 'FF32373C';
 const LIGHT_GRAY = 'FFF2F2F2';
+const EXTRA_HEAD = 'FF5A6169'; // slightly lighter header for injected photo columns
 
 function solidFill(argb: string): ExcelJS.Fill {
   return { type: 'pattern', pattern: 'solid', fgColor: { argb } };
 }
-
-// Short, human-friendly sheet names per question (max 31 chars for Excel)
-const SHEET_NAMES: Record<string, string> = {
-  'osa-sku':          'Ranged SKU Report',
-  'osa-flow':         'Merchandising Flow',
-  'osa-oos':          'OOS Flagged',
-  'osa-npd':          'NPD Report',
-  'osa-backup':       'OOS Backup Stock',
-  'promo-active':     'Promotion Active',
-  'promo-comms':      'Promo Communication',
-  'price-pi':         'PI Labels',
-  'price-correct':    'Pricing Correct',
-  'price-files':      'Pricing Files Shared',
-  'price-tracking':   'Pricing Tracking',
-  'sh-clean':         'Clean & Presentable',
-  'sh-fifo':          'FIFO Rule',
-  'sh-shortdated':    'Short Dated Stock',
-  'sh-expired':       'Damaged & Expired',
-  'sh-expired-check': 'Expired Stock',
-  'mp-available':     'Multi Placements',
-  'mp-forward':       'Forward Share',
-  'mp-identified':    'Multi Place Identified',
-  'pos-implemented':  'POS Implemented',
-  'gen-mgr-issues':   'Store Manager Issues',
-  'gen-opportunities': 'Opportunities',
-};
 
 interface ExceptionRow {
   repName: string;
@@ -50,6 +31,10 @@ interface ExceptionRow {
   skus: string;
   photoUrls: string[];
   comment: string;
+  /** Photos injected from an orphan "Photo Question", grouped by that question. */
+  orphanExtras: { label: string; url: string }[];
+  /** True when the row exists ONLY to carry orphan photos (no native exception). */
+  isOrphanOnly?: boolean;
 }
 
 interface OrphanPhotoRow {
@@ -69,16 +54,19 @@ interface QuestionExceptions {
   questionText: string;
   section: string;
   rows: ExceptionRow[];
+  /** Count of native exception rows (excludes orphan-only rows). */
+  nativeCount: number;
 }
 
-// Name of the catch-all sheet for photo columns that don't map to a scorecard question.
+// Name of the catch-all sheet for photo columns that couldn't be mapped.
 const ORPHAN_SHEET_NAME = 'Photos with no question';
 
 // ── Main builder ──────────────────────────────────────────────────────────────
 
 export async function buildExceptionReport(
   visits: StoreVisit[],
-  submissionDate: string
+  submissionDate: string,
+  photoQuestionMap?: Map<string, string>,
 ): Promise<{ buffer: Buffer; exceptionCount: number; sheetSummary: { name: string; count: number }[] }> {
   const wb = new ExcelJS.Workbook();
   wb.creator = 'Vital Exception Report Builder';
@@ -86,26 +74,14 @@ export async function buildExceptionReport(
 
   const hr = (argb: string) => solidFill(argb);
 
+  // Effective Photo Question → sheet map (defaults when none supplied).
+  const pqMap = photoQuestionMap
+    ?? new Map<string, string>(Object.entries(DEFAULT_PHOTO_QUESTION_MAP));
+
+  const questionById = new Map(QUESTIONS.map((q) => [q.id, q]));
+
   // Gather exceptions per question
   const allExceptions: QuestionExceptions[] = [];
-
-  // Gather orphan photo rows across all visits (photos with no question)
-  const orphanPhotoRows: OrphanPhotoRow[] = [];
-  for (const v of visits) {
-    if (!v.orphanPhotos?.length) continue;
-    for (const op of v.orphanPhotos) {
-      orphanPhotoRows.push({
-        repName: `${v.repFirstName} ${v.repLastName}`.trim(),
-        channel: v.channel,
-        store: v.store,
-        storeCode: v.storeCode,
-        province: v.province,
-        date: v.date,
-        photoQuestion: op.header,
-        url: op.url,
-      });
-    }
-  }
 
   for (const q of QUESTIONS) {
     const badAnswer = q.inverted ? 'yes' : 'no';
@@ -125,6 +101,7 @@ export async function buildExceptionReport(
         skus: v.skus?.[q.id] ?? '',
         photoUrls: v.photoUrls?.[q.id] ?? [],
         comment: v.comments?.[q.id] ?? '',
+        orphanExtras: [],
       });
     }
 
@@ -136,10 +113,103 @@ export async function buildExceptionReport(
       questionText: q.text,
       section: q.section,
       rows,
+      nativeCount: rows.length,
     });
   }
 
-  const totalExceptions = allExceptions.reduce((sum, qe) => sum + qe.rows.length, 0);
+  // ── Distribute orphan photos into their mapped sheets ────────────────────────
+  // Gather orphan photo rows across all visits (photos with no scorecard question)
+  const orphanPhotoRows: OrphanPhotoRow[] = [];
+  for (const v of visits) {
+    if (!v.orphanPhotos?.length) continue;
+    for (const op of v.orphanPhotos) {
+      orphanPhotoRows.push({
+        repName: `${v.repFirstName} ${v.repLastName}`.trim(),
+        channel: v.channel,
+        store: v.store,
+        storeCode: v.storeCode,
+        province: v.province,
+        date: v.date,
+        photoQuestion: op.header,
+        url: op.url,
+      });
+    }
+  }
+
+  // Find (or create) the QuestionExceptions bucket for a question id — creates an
+  // empty sheet for a question that had no native exceptions but receives photos.
+  const getOrCreateQE = (questionId: string): QuestionExceptions | null => {
+    let qe = allExceptions.find((e) => e.questionId === questionId);
+    if (qe) return qe;
+    const q = questionById.get(questionId);
+    if (!q) return null;
+    qe = {
+      questionId,
+      sheetName: (SHEET_NAMES[questionId] ?? q.text).slice(0, 31),
+      questionText: q.text,
+      section: q.section,
+      rows: [],
+      nativeCount: 0,
+    };
+    allExceptions.push(qe);
+    return qe;
+  };
+
+  const remainingOrphans: OrphanPhotoRow[] = [];
+  let injectedPhotoCount = 0;
+  // Track injected photos per sheet name (for the summary of orphan-only sheets).
+  const injectedBySheet = new Map<string, number>();
+
+  for (const op of orphanPhotoRows) {
+    const sheetName = pqMap.get(normPhotoQuestion(op.photoQuestion));
+    const questionId = sheetName ? SHEET_TO_QUESTION_ID[sheetName] : undefined;
+    if (!sheetName || !questionId) {
+      remainingOrphans.push(op);
+      continue;
+    }
+    const qe = getOrCreateQE(questionId);
+    if (!qe) {
+      remainingOrphans.push(op);
+      continue;
+    }
+
+    // Match the store within the target sheet by Store Code (case-insensitive).
+    const scKey = op.storeCode.trim().toLowerCase();
+    let row = scKey ? qe.rows.find((r) => r.storeCode.trim().toLowerCase() === scKey) : undefined;
+    if (!row) {
+      row = {
+        repName: op.repName,
+        channel: op.channel,
+        store: op.store,
+        storeCode: op.storeCode,
+        province: op.province,
+        date: op.date,
+        answer: '',
+        skus: '',
+        photoUrls: [],
+        comment: '',
+        orphanExtras: [],
+        isOrphanOnly: true,
+      };
+      qe.rows.push(row);
+    }
+    row.orphanExtras.push({ label: op.photoQuestion.trim(), url: op.url });
+    injectedPhotoCount++;
+    injectedBySheet.set(sheetName, (injectedBySheet.get(sheetName) ?? 0) + 1);
+  }
+
+  // Summary count per sheet: native exceptions, or injected photos for a sheet
+  // that exists purely to carry orphan photos (so it's never a confusing 0).
+  const summaryCountFor = (qe: QuestionExceptions): number =>
+    qe.nativeCount > 0 ? qe.nativeCount : (injectedBySheet.get(qe.sheetName) ?? qe.rows.length);
+
+  // Keep sheets in a stable, question-defined order.
+  const questionOrder = new Map(QUESTIONS.map((q, i) => [q.id, i]));
+  allExceptions.sort(
+    (a, b) => (questionOrder.get(a.questionId) ?? 999) - (questionOrder.get(b.questionId) ?? 999)
+  );
+
+  const totalExceptions = allExceptions.reduce((sum, qe) => sum + qe.nativeCount, 0);
 
   // ── Summary sheet ──────────────────────────────────────────────────────────
   const summaryWs = wb.addWorksheet('Summary');
@@ -162,10 +232,13 @@ export async function buildExceptionReport(
   summaryWs.getRow(2).height = 22;
   summaryWs.mergeCells('A2:C2');
   const stats = summaryWs.getCell('A2');
-  const orphanStats = orphanPhotoRows.length > 0
-    ? ` · ${orphanPhotoRows.length} orphan photo${orphanPhotoRows.length !== 1 ? 's' : ''}`
+  const photoStats = injectedPhotoCount > 0
+    ? ` · ${injectedPhotoCount} photo${injectedPhotoCount !== 1 ? 's' : ''} merged into sheets`
     : '';
-  stats.value = `${totalExceptions} total exception${totalExceptions !== 1 ? 's' : ''} across ${allExceptions.length} question${allExceptions.length !== 1 ? 's' : ''} · ${visits.length} visits analysed${orphanStats}`;
+  const orphanStats = remainingOrphans.length > 0
+    ? ` · ${remainingOrphans.length} unmapped photo${remainingOrphans.length !== 1 ? 's' : ''}`
+    : '';
+  stats.value = `${totalExceptions} total exception${totalExceptions !== 1 ? 's' : ''} across ${allExceptions.length} question${allExceptions.length !== 1 ? 's' : ''} · ${visits.length} visits analysed${photoStats}${orphanStats}`;
   stats.font = { size: 10, italic: true, color: { argb: DARK_GRAY } };
   stats.fill = hr(LIGHT_GRAY);
   stats.alignment = { horizontal: 'center', vertical: 'middle' };
@@ -199,20 +272,20 @@ export async function buildExceptionReport(
     qCell.alignment = { vertical: 'middle' };
 
     const cntCell = summaryWs.getCell(rowIdx, 3);
-    cntCell.value = qe.rows.length;
+    cntCell.value = summaryCountFor(qe);
     cntCell.font = { bold: true, size: 10, color: { argb: VITAL_RED } };
     cntCell.fill = hr(rowBg);
     cntCell.alignment = { horizontal: 'center', vertical: 'middle' };
   });
 
-  // Orphan photos summary row (if any)
-  if (orphanPhotoRows.length > 0) {
+  // Remaining (unmapped) orphan photos summary row (if any)
+  if (remainingOrphans.length > 0) {
     const rowIdx = allExceptions.length + 5;
     const rowBg = allExceptions.length % 2 === 0 ? LIGHT_GRAY : WHITE;
     summaryWs.getRow(rowIdx).height = 18;
 
     const sectionCell = summaryWs.getCell(rowIdx, 1);
-    sectionCell.value = 'Orphan Photos';
+    sectionCell.value = 'Unmapped Photos';
     sectionCell.font = { size: 9, color: { argb: DARK_GRAY } };
     sectionCell.fill = hr(rowBg);
     sectionCell.alignment = { vertical: 'middle' };
@@ -224,13 +297,13 @@ export async function buildExceptionReport(
     qCell.alignment = { vertical: 'middle' };
 
     const cntCell = summaryWs.getCell(rowIdx, 3);
-    cntCell.value = orphanPhotoRows.length;
+    cntCell.value = remainingOrphans.length;
     cntCell.font = { bold: true, size: 10, color: { argb: VITAL_RED } };
     cntCell.fill = hr(rowBg);
     cntCell.alignment = { horizontal: 'center', vertical: 'middle' };
   }
 
-  if (allExceptions.length === 0 && orphanPhotoRows.length === 0) {
+  if (allExceptions.length === 0 && remainingOrphans.length === 0) {
     summaryWs.getRow(5).height = 20;
     summaryWs.mergeCells('A5:C5');
     const noData = summaryWs.getCell('A5');
@@ -255,11 +328,31 @@ export async function buildExceptionReport(
     const ws = wb.addWorksheet(qe.sheetName);
     ws.views = [{ state: 'frozen', ySplit: 2, showGridLines: true }];
 
-    // Dynamic photo column count — one column per photo up to this question's max.
+    // Dynamic native photo column count — one column per photo up to this
+    // question's max (unchanged behaviour).
     const maxPhotoCount = qe.rows.reduce((m, r) => Math.max(m, r.photoUrls.length), 0);
-    const firstPhotoCol = 8;                   // after SKUs
+
+    // Injected-photo columns: grouped by Photo Question label, kept in
+    // first-seen order across the sheet, one column per photo up to the max
+    // count any single row has for that label.
+    const labelOrder: string[] = [];
+    const labelMax = new Map<string, number>();
+    for (const r of qe.rows) {
+      const perRow = new Map<string, number>();
+      for (const ex of r.orphanExtras) {
+        if (!labelMax.has(ex.label)) { labelOrder.push(ex.label); labelMax.set(ex.label, 0); }
+        perRow.set(ex.label, (perRow.get(ex.label) ?? 0) + 1);
+      }
+      for (const [label, n] of perRow) {
+        if (n > (labelMax.get(label) ?? 0)) labelMax.set(label, n);
+      }
+    }
+
+    const firstPhotoCol = 8;                        // after SKUs
     const commentCol = firstPhotoCol + maxPhotoCount;
-    const totalCols = commentCol;              // last column
+    const firstExtraCol = commentCol + 1;
+    const totalExtraCols = labelOrder.reduce((s, l) => s + (labelMax.get(l) ?? 0), 0);
+    const totalCols = commentCol + totalExtraCols;  // last column
 
     // Column widths
     ws.getColumn(1).width = 22;  // Rep Name
@@ -273,6 +366,9 @@ export async function buildExceptionReport(
       ws.getColumn(firstPhotoCol + p).width = 14;
     }
     ws.getColumn(commentCol).width = 40;  // Comments
+    for (let e = 0; e < totalExtraCols; e++) {
+      ws.getColumn(firstExtraCol + e).width = 22; // injected photo columns
+    }
 
     const lastColLetter = colLetter(totalCols);
 
@@ -280,12 +376,16 @@ export async function buildExceptionReport(
     ws.getRow(1).height = 28;
     ws.mergeCells(`A1:${lastColLetter}1`);
     const sheetTitle = ws.getCell('A1');
-    sheetTitle.value = `${qe.section}: ${qe.questionText}  (${qe.rows.length} exception${qe.rows.length !== 1 ? 's' : ''})`;
+    const exLabel = qe.nativeCount > 0
+      ? `${qe.nativeCount} exception${qe.nativeCount !== 1 ? 's' : ''}`
+      : 'photos only';
+    sheetTitle.value = `${qe.section}: ${qe.questionText}  (${exLabel})`;
     sheetTitle.font = { bold: true, size: 11, color: { argb: WHITE } };
     sheetTitle.fill = hr(VITAL_RED);
     sheetTitle.alignment = { horizontal: 'left', vertical: 'middle' };
 
-    // Row 2: Column headers — expands Photo into Photo 1 / Photo 2 / … when needed
+    // Row 2: Column headers — native photos expand into Photo 1 / Photo 2 / …
+    // and injected columns are labelled with their Photo Question.
     ws.getRow(2).height = 20;
     const photoHeaders: string[] =
       maxPhotoCount === 0
@@ -293,12 +393,26 @@ export async function buildExceptionReport(
         : maxPhotoCount === 1
         ? ['Photo']
         : Array.from({ length: maxPhotoCount }, (_, i) => `Photo ${i + 1}`);
+    const extraHeaders: string[] = [];
+    for (const label of labelOrder) {
+      const n = labelMax.get(label) ?? 0;
+      for (let i = 0; i < n; i++) {
+        extraHeaders.push(n === 1 ? label : `${label} ${i + 1}`);
+      }
+    }
     const headers = ['Rep Name', 'Channel', 'Store', 'Store Code', 'Province', 'Date', "SKU's", ...photoHeaders, 'Comments'];
     headers.forEach((label, i) => {
       const c = ws.getCell(2, i + 1);
       c.value = label;
       c.font = { bold: true, size: 9, color: { argb: WHITE } };
       c.fill = hr(DARK_GRAY);
+      c.alignment = { horizontal: 'left', vertical: 'middle' };
+    });
+    extraHeaders.forEach((label, i) => {
+      const c = ws.getCell(2, firstExtraCol + i);
+      c.value = label;
+      c.font = { bold: true, size: 9, color: { argb: WHITE } };
+      c.fill = hr(EXTRA_HEAD);
       c.alignment = { horizontal: 'left', vertical: 'middle' };
     });
 
@@ -326,7 +440,7 @@ export async function buildExceptionReport(
       skuCell.fill = hr(rowBg);
       skuCell.alignment = { horizontal: 'left', vertical: 'middle', wrapText: true };
 
-      // Photo cells — one hyperlink per column, blank where this row has fewer photos
+      // Native photo cells — one hyperlink per column
       const cellLabel = maxPhotoCount === 1 ? 'View Photo' : 'View';
       for (let p = 0; p < maxPhotoCount; p++) {
         const photoCell = ws.getCell(rowIdx, firstPhotoCol + p);
@@ -348,14 +462,41 @@ export async function buildExceptionReport(
       commentCell.font = { size: 9, italic: true, color: { argb: DARK_GRAY } };
       commentCell.fill = hr(rowBg);
       commentCell.alignment = { horizontal: 'left', vertical: 'middle', wrapText: true };
+
+      // Injected photo cells — bucket this row's extras by label, then place
+      // each into its labelled column block.
+      const byLabel = new Map<string, string[]>();
+      for (const extra of ex.orphanExtras) {
+        if (!byLabel.has(extra.label)) byLabel.set(extra.label, []);
+        byLabel.get(extra.label)!.push(extra.url);
+      }
+      let extraCol = firstExtraCol;
+      for (const label of labelOrder) {
+        const n = labelMax.get(label) ?? 0;
+        const urls = byLabel.get(label) ?? [];
+        for (let i2 = 0; i2 < n; i2++) {
+          const cell = ws.getCell(rowIdx, extraCol);
+          const url = urls[i2];
+          if (url) {
+            cell.value = { text: 'View Photo', hyperlink: url };
+            cell.font = { size: 8, underline: true, color: { argb: 'FF0563C1' } };
+          } else {
+            cell.value = '';
+            cell.font = { size: 8, color: { argb: DARK_GRAY } };
+          }
+          cell.fill = hr(rowBg);
+          cell.alignment = { horizontal: 'center', vertical: 'middle' };
+          extraCol++;
+        }
+      }
     });
 
     // Auto-filter on header row
     ws.autoFilter = { from: 'A2', to: `${lastColLetter}${2 + qe.rows.length}` };
   }
 
-  // ── "Photos with no question" sheet ────────────────────────────────────────
-  if (orphanPhotoRows.length > 0) {
+  // ── "Photos with no question" sheet — only unmapped remainder ────────────────
+  if (remainingOrphans.length > 0) {
     const ws = wb.addWorksheet(ORPHAN_SHEET_NAME);
     ws.views = [{ state: 'frozen', ySplit: 2, showGridLines: true }];
 
@@ -372,7 +513,7 @@ export async function buildExceptionReport(
     ws.getRow(1).height = 28;
     ws.mergeCells('A1:H1');
     const sheetTitle = ws.getCell('A1');
-    sheetTitle.value = `Photos with no question  (${orphanPhotoRows.length} photo${orphanPhotoRows.length !== 1 ? 's' : ''})`;
+    sheetTitle.value = `Photos with no question  (${remainingOrphans.length} unmapped photo${remainingOrphans.length !== 1 ? 's' : ''})`;
     sheetTitle.font = { bold: true, size: 11, color: { argb: WHITE } };
     sheetTitle.fill = hr(VITAL_RED);
     sheetTitle.alignment = { horizontal: 'left', vertical: 'middle' };
@@ -389,7 +530,7 @@ export async function buildExceptionReport(
     });
 
     // Data rows
-    orphanPhotoRows.forEach((op, i) => {
+    remainingOrphans.forEach((op, i) => {
       const rowIdx = i + 3;
       const rowBg = i % 2 === 0 ? LIGHT_GRAY : WHITE;
       ws.getRow(rowIdx).height = 20;
@@ -410,13 +551,13 @@ export async function buildExceptionReport(
       linkCell.alignment = { horizontal: 'center', vertical: 'middle' };
     });
 
-    ws.autoFilter = { from: 'A2', to: `H${2 + orphanPhotoRows.length}` };
+    ws.autoFilter = { from: 'A2', to: `H${2 + remainingOrphans.length}` };
   }
 
   const buffer = await wb.xlsx.writeBuffer();
-  const sheetSummary = allExceptions.map((qe) => ({ name: qe.sheetName, count: qe.rows.length }));
-  if (orphanPhotoRows.length > 0) {
-    sheetSummary.push({ name: ORPHAN_SHEET_NAME, count: orphanPhotoRows.length });
+  const sheetSummary = allExceptions.map((qe) => ({ name: qe.sheetName, count: summaryCountFor(qe) }));
+  if (remainingOrphans.length > 0) {
+    sheetSummary.push({ name: ORPHAN_SHEET_NAME, count: remainingOrphans.length });
   }
   return {
     buffer: Buffer.from(buffer),

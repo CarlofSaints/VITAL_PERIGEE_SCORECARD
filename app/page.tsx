@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import Image from 'next/image';
 import Link from 'next/link';
 import type { Rep } from '@/types';
+import { SELECTABLE_SHEETS } from '@/constants/sheets';
 
 // ── Comparison Report section ──────────────────────────────────────────────────
 
@@ -317,6 +318,9 @@ interface ParsedMeta {
   dateRange: { from: string; to: string };
   rowCount: number;
   newEmails?: { dataEmail: string; displayName?: string }[];
+  /** Distinct "Photo Question" values on unmapped photos + their resolved sheet
+   *  (null when the value is unknown and needs the user to pick a target). */
+  photoMappings?: { value: string; sheet: string | null }[];
 }
 
 interface GenerateResult {
@@ -454,6 +458,84 @@ function MultiSelect({
   );
 }
 
+// ── Photo Question → sheet mapper ──────────────────────────────────────────────
+
+function PhotoQuestionMapper({
+  mappings,
+  choices,
+  onChange,
+}: {
+  mappings: { value: string; sheet: string | null }[];
+  choices: Record<string, string>;
+  onChange: (value: string, sheet: string) => void;
+}) {
+  // "Unknown" = a value that arrived with no resolved sheet AND the user hasn't
+  // picked one yet. These are the ones that genuinely need attention.
+  const unknownCount = mappings.filter((m) => !m.sheet && !choices[m.value]).length;
+  const allResolved = unknownCount === 0;
+
+  return (
+    <div className={`rounded-xl border shadow-sm p-6 ${allResolved ? 'bg-white border-gray-200' : 'bg-amber-50 border-amber-300'}`}>
+      <h2 className="text-base font-bold text-[#32373C] mb-1 flex items-center gap-2">
+        <span className={`w-6 h-6 rounded-full text-white text-xs flex items-center justify-center font-bold ${allResolved ? 'bg-[#32373C]' : 'bg-amber-500'}`}>
+          {allResolved ? '✓' : '!'}
+        </span>
+        Photo Question Mapping
+      </h2>
+      <p className="text-xs text-gray-600 mb-1">
+        This upload contains photos whose <strong>Photo Question</strong> isn&apos;t tied to a scorecard question.
+        Each is added to the exception sheet you choose — matched to the store by Store Code, or as a new line if the store isn&apos;t on that sheet.
+      </p>
+      <p className="text-xs text-gray-500 mb-4">
+        {allResolved
+          ? 'All values are mapped. Your choices are remembered for next time.'
+          : `${unknownCount} new value${unknownCount !== 1 ? 's' : ''} need a target sheet. Unmapped values stay on the “Photos with no question” sheet.`}
+        {' '}
+        <Link href="/admin/photo-map" className="text-[#DA291C] underline">Manage mappings</Link>.
+      </p>
+
+      <div className="space-y-2">
+        {mappings.map((m) => {
+          const chosen = choices[m.value] ?? '';
+          const isUnknown = !m.sheet && !chosen;
+          const isDefault = !!m.sheet && (choices[m.value] ?? m.sheet) === m.sheet;
+          return (
+            <div
+              key={m.value}
+              className={`flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 p-3 rounded-lg border ${
+                isUnknown ? 'border-amber-300 bg-white' : 'border-gray-200 bg-white'
+              }`}
+            >
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold text-[#32373C] truncate">{m.value}</p>
+                <p className="text-xs text-gray-400">
+                  {isUnknown ? 'New — pick a sheet' : m.sheet ? 'Known mapping' : 'Chosen this session'}
+                </p>
+              </div>
+              <svg className="hidden sm:block w-4 h-4 text-gray-300 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" />
+              </svg>
+              <select
+                value={chosen}
+                onChange={(e) => onChange(m.value, e.target.value)}
+                className={`w-full sm:w-64 px-3 py-2 border rounded-lg text-sm bg-white focus:outline-none focus:border-[#DA291C] ${
+                  isUnknown ? 'border-amber-400 text-amber-800' : 'border-gray-300 text-[#32373C]'
+                }`}
+              >
+                <option value="">— choose sheet —</option>
+                {SELECTABLE_SHEETS.map((s) => (
+                  <option key={s} value={s}>{s}</option>
+                ))}
+              </select>
+              {isDefault && <span className="text-xs text-green-600 font-medium shrink-0">default</span>}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function Home() {
@@ -466,6 +548,8 @@ export default function Home() {
 
   const [selectedReps, setSelectedReps]         = useState<string[]>([]);
   const [selectedChannels, setSelectedChannels] = useState<string[]>([]);
+  // Photo Question value → chosen target sheet (prefilled with known/default mappings).
+  const [photoChoices, setPhotoChoices]         = useState<Record<string, string>>({});
   const [action, setAction]                     = useState<'sharepoint' | 'email' | 'both'>('sharepoint');
   const [emailAddress, setEmailAddress]         = useState('');
   const [emailConfirmed, setEmailConfirmed]     = useState(false);
@@ -514,6 +598,12 @@ export default function Home() {
       setParsedMeta(data);
       setSelectedReps(data.reps.map((r: Rep) => r.email));
       setSelectedChannels(data.channels);
+      // Prefill photo-question choices with the resolved (known) sheet mappings.
+      const initialChoices: Record<string, string> = {};
+      for (const m of (data.photoMappings ?? []) as { value: string; sheet: string | null }[]) {
+        if (m.sheet) initialChoices[m.value] = m.sheet;
+      }
+      setPhotoChoices(initialChoices);
     } catch (err: unknown) {
       setParseError(err instanceof Error ? err.message : 'Unknown error');
     } finally {
@@ -569,6 +659,7 @@ export default function Home() {
     if (emailToReps) fd.append('emailToReps', 'true');
     if (emailToReps && ccSelf && ccEmail) fd.append('ccEmail', ccEmail);
     if (includeExceptionReport) fd.append('includeExceptionReport', 'true');
+    if (Object.keys(photoChoices).length) fd.append('photoSheetMap', JSON.stringify(photoChoices));
 
     try {
       const res  = await fetch('/api/generate', { method: 'POST', body: fd });
@@ -602,6 +693,9 @@ export default function Home() {
           <div className="flex items-center gap-6">
             <Link href="/admin/aliases" className="text-sm text-[#32373C] hover:text-[#DA291C] font-medium transition-colors">
               Email Aliases
+            </Link>
+            <Link href="/admin/photo-map" className="text-sm text-[#32373C] hover:text-[#DA291C] font-medium transition-colors">
+              Photo Mapping
             </Link>
             <Link href="/log" className="text-sm text-[#32373C] hover:text-[#DA291C] font-medium transition-colors">
               Activity Log
@@ -717,6 +811,23 @@ export default function Home() {
                     </div>
                   </div>
                 </div>
+              )}
+
+              {/* Photo Question → sheet mapping — shown when the upload has photos
+                  whose "Photo Question" doesn't belong to a scorecard question. */}
+              {parsedMeta.photoMappings && parsedMeta.photoMappings.length > 0 && (
+                <PhotoQuestionMapper
+                  mappings={parsedMeta.photoMappings}
+                  choices={photoChoices}
+                  onChange={(value, sheet) =>
+                    setPhotoChoices((prev) => {
+                      const next = { ...prev };
+                      if (sheet) next[value] = sheet;
+                      else delete next[value];
+                      return next;
+                    })
+                  }
+                />
               )}
 
               {/* Step 2: Reps */}

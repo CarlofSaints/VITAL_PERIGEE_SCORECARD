@@ -103,6 +103,7 @@ const HISTORY_FOLDER    = `${BASE_PATH}/Historical Data`;
 const HISTORY_FILENAME  = 'VITAL_SCORE_HISTORY.xlsx';
 const LOG_FILENAME      = 'VITAL_ACTIVITY_LOG.json';
 const ALIASES_FILENAME  = 'VITAL_EMAIL_ALIASES.json';
+const PHOTOMAP_FILENAME = 'VITAL_PHOTO_QUESTION_MAP.json';
 
 export async function downloadLogFile(): Promise<Buffer | null> {
   const { token, driveId } = await getDriveContext();
@@ -158,6 +159,35 @@ export async function uploadAliasesFile(buffer: Buffer): Promise<void> {
     }
   );
   if (!res.ok) throw new Error(`Aliases upload failed (${res.status}): ${await res.text()}`);
+}
+
+// ── Photo-question → sheet mapping file (JSON) ────────────────────────────────
+
+export async function downloadPhotoMapFile(): Promise<Buffer | null> {
+  const { token, driveId } = await getDriveContext();
+  const filePath = encodePath(`${HISTORY_FOLDER}/${PHOTOMAP_FILENAME}`);
+  const res = await fetch(
+    `https://graph.microsoft.com/v1.0/drives/${driveId}/root:/${filePath}:/content`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`Photo map download failed (${res.status}): ${await res.text()}`);
+  return Buffer.from(await res.arrayBuffer());
+}
+
+export async function uploadPhotoMapFile(buffer: Buffer): Promise<void> {
+  const { token, driveId } = await getDriveContext();
+  await ensureFolderExists(token, driveId, HISTORY_FOLDER);
+  const filePath = encodePath(`${HISTORY_FOLDER}/${PHOTOMAP_FILENAME}`);
+  const res = await fetch(
+    `https://graph.microsoft.com/v1.0/drives/${driveId}/root:/${filePath}:/content`,
+    {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: new Uint8Array(buffer),
+    }
+  );
+  if (!res.ok) throw new Error(`Photo map upload failed (${res.status}): ${await res.text()}`);
 }
 
 /**

@@ -7,6 +7,8 @@ import { sendReports, sendRepEmail, sendExceptionReport, type RepStat, type Chan
 import { appendToHistory } from '@/lib/history';
 import { appendActivityLog, type LogReport } from '@/lib/activityLog';
 import { loadAliases } from '@/lib/aliases';
+import { resolvePhotoMap, upsertPhotoMappings } from '@/lib/photoMap';
+import { normPhotoQuestion } from '@/constants/sheets';
 import { QUESTIONS } from '@/constants/questions';
 import type { GenerateResult, StoreVisit } from '@/types';
 
@@ -57,9 +59,12 @@ export async function POST(req: NextRequest) {
     const emailToReps            = formData.get('emailToReps') === 'true';
     const ccEmail                = (formData.get('ccEmail') as string) ?? '';
     const includeExceptionReport = formData.get('includeExceptionReport') === 'true';
+    const photoSheetMapRaw       = formData.get('photoSheetMap') as string | null;
 
     const selectedReps     = selectedRepsRaw    ? JSON.parse(selectedRepsRaw)    : null;
     const selectedChannels = selectedChannelsRaw ? JSON.parse(selectedChannelsRaw) : null;
+    // Photo Question → sheet choices made in the UI this session (value → sheet name).
+    const photoSheetMap: Record<string, string> = photoSheetMapRaw ? JSON.parse(photoSheetMapRaw) : {};
 
     const buffer = Buffer.from(await file.arrayBuffer());
     const parsed = parsePerigeeExport(buffer);
@@ -223,7 +228,26 @@ export async function POST(req: NextRequest) {
     if (includeExceptionReport) {
       try {
         console.log(`[generate] Building exception report for ${filteredVisits.length} visits…`);
-        const { buffer: exBuf, exceptionCount, sheetSummary } = await buildExceptionReport(filteredVisits, submissionDate);
+
+        // Persist any Photo Question → sheet choices made in the UI, then build
+        // the effective map (defaults + persisted store + this session's picks).
+        const sessionMappings = Object.entries(photoSheetMap)
+          .filter(([value, sheet]) => value && sheet)
+          .map(([value, sheet]) => ({ photoQuestion: value, sheetName: sheet }));
+        if (sessionMappings.length) {
+          try {
+            await upsertPhotoMappings(sessionMappings);
+          } catch (err) {
+            console.error('[generate] persist photo mappings failed:', err instanceof Error ? err.message : err);
+          }
+        }
+        const effectiveMap = await resolvePhotoMap();
+        // Session picks win even if the persist step failed (e.g. SharePoint down).
+        for (const { photoQuestion, sheetName } of sessionMappings) {
+          effectiveMap.set(normPhotoQuestion(photoQuestion), sheetName);
+        }
+
+        const { buffer: exBuf, exceptionCount, sheetSummary } = await buildExceptionReport(filteredVisits, submissionDate, effectiveMap);
         const exFileName = buildExceptionFileName(filteredVisits);
         const exFolderName = buildExceptionFolderName(filteredVisits);
 

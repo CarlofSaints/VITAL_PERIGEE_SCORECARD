@@ -204,6 +204,9 @@ export default function AliasesPage() {
             <Link href="/" className="text-sm text-[#32373C] hover:text-[#DA291C] font-medium transition-colors">
               ← Score Card Builder
             </Link>
+            <Link href="/admin/photo-map" className="text-sm text-[#32373C] hover:text-[#DA291C] font-medium transition-colors">
+              Photo Mapping
+            </Link>
             <Link href="/log" className="text-sm text-[#32373C] hover:text-[#DA291C] font-medium transition-colors">
               Activity Log
             </Link>
